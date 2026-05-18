@@ -1,9 +1,10 @@
 import asyncio
+import heapq
 import json
 import logging
 import os
 from collections import deque
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from nio import (
     AsyncClient,
@@ -253,9 +254,13 @@ class MatrixMCPClient:
         rooms_response: JoinedRoomsResponse = await self._client.joined_rooms()
         room_ids = rooms_response.rooms if hasattr(rooms_response, "rooms") else []
 
-        all_records: list[MessageRecord] = []
+        # Min-heap of (timestamp, event_id, record): keeps only the buffer_size
+        # most recent records in memory while all records are indexed to the vector store.
+        # event_id breaks timestamp ties without requiring MessageRecord to be comparable.
+        heap: list[tuple[int, str, MessageRecord]] = []
+        limit = self._config.message_buffer_size
+
         for room_id in room_ids:
-            # Get the prev_batch token for this room from the initial sync
             prev_batch: Optional[str] = None
             if hasattr(initial_sync, "rooms") and initial_sync.rooms:
                 joined = getattr(initial_sync.rooms, "join", {})
@@ -268,19 +273,19 @@ class MatrixMCPClient:
                 logger.debug("No prev_batch for room %s, skipping backfill", room_id)
                 continue
 
-            all_records.extend(await self._backfill_room(room_id, prev_batch))
+            async for record in self._backfill_room(room_id, prev_batch):
+                heapq.heappush(heap, (record.timestamp, record.event_id, record))
+                if len(heap) > limit:
+                    heapq.heappop(heap)
 
-        # Insert oldest-first so that when the deque is full, oldest records are
-        # evicted naturally as newer messages arrive — never the newest ones.
-        all_records.sort(key=lambda m: m.timestamp)
-        for record in all_records:
+        # Insert oldest-first so the deque's eviction order is correct.
+        for _, _eid, record in sorted(heap, key=lambda x: x[0]):
             self._buffer.append(record)
 
-    async def _backfill_room(self, room_id: str, prev_batch: str) -> list[MessageRecord]:
+    async def _backfill_room(self, room_id: str, prev_batch: str) -> AsyncIterator[MessageRecord]:
         pages_max = self._config.backfill_pages_max  # 0 = unlimited
         page = 0
         fetched = 0
-        all_records: list[MessageRecord] = []
 
         while pages_max == 0 or page < pages_max:
             response: RoomMessagesResponse = await self._client.room_messages(
@@ -298,12 +303,13 @@ class MatrixMCPClient:
                 if isinstance(event, RoomMessageText):
                     record = self._parse_event(room_id, event)
                     if record and record.event_id not in self._seen_event_ids:
-                        page_records.append(record)
                         self._seen_event_ids.add(record.event_id)
+                        page_records.append(record)
 
             if page_records:
                 await self._batch_index(page_records)
-                all_records.extend(page_records)
+                for record in page_records:
+                    yield record
 
             fetched += len(response.chunk)
             page += 1
@@ -314,7 +320,6 @@ class MatrixMCPClient:
             prev_batch = response.end
 
         logger.info("Backfilled %d messages from room %s (%d pages)", fetched, room_id, page)
-        return all_records
 
     async def _on_message(self, room: MatrixRoom, event: RoomMessageTextEvent) -> None:
         if event.event_id in self._seen_event_ids:

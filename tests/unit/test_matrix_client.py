@@ -198,7 +198,8 @@ async def test_backfill_room_stops_when_end_is_none(client, mock_nio_client):
     mock_nio_client.room_messages = AsyncMock(side_effect=[resp1, resp2])
     client._embedding_client.embed_batch = AsyncMock(return_value=[[0.1] * 1536, [0.2] * 1536])
 
-    await client._backfill_room("!room:example.org", "t0")
+    async for _ in client._backfill_room("!room:example.org", "t0"):
+        pass
     assert mock_nio_client.room_messages.call_count == 2
 
 
@@ -208,7 +209,8 @@ async def test_backfill_room_does_not_stop_on_empty_chunk_alone(client, mock_nio
     resp2 = _make_room_messages_response([], end=None)
     mock_nio_client.room_messages = AsyncMock(side_effect=[resp1, resp2])
 
-    await client._backfill_room("!room:example.org", "t0")
+    async for _ in client._backfill_room("!room:example.org", "t0"):
+        pass
     assert mock_nio_client.room_messages.call_count == 2
 
 
@@ -221,7 +223,8 @@ async def test_backfill_room_respects_pages_max(client, mock_nio_client):
     client._config.backfill_pages_max = 2
     client._embedding_client.embed_batch = AsyncMock(return_value=[[0.1] * 1536])
 
-    await client._backfill_room("!room:example.org", "t0")
+    async for _ in client._backfill_room("!room:example.org", "t0"):
+        pass
     assert mock_nio_client.room_messages.call_count == 2
 
 
@@ -239,7 +242,8 @@ async def test_backfill_room_unlimited_when_pages_max_zero(client, mock_nio_clie
         return_value=[[0.1] * 1536, [0.1] * 1536, [0.1] * 1536]
     )
 
-    await client._backfill_room("!room:example.org", "t0")
+    async for _ in client._backfill_room("!room:example.org", "t0"):
+        pass
     assert mock_nio_client.room_messages.call_count == 3
 
 
