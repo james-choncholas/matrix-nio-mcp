@@ -198,12 +198,18 @@ Understanding this sequence is critical for any change to `matrix_client.py:star
 ```
 1. os.makedirs + AsyncClient + restore_login  (same as fresh start)
        ↓ loaded_sync_token is now set from the store
-2. client.add_event_callback(_on_message, RoomMessageText)
-3. asyncio.create_task(client.sync_forever(since=loaded_sync_token, ...))
+2. _load_buffer()
+       ↓ reads {MATRIX_STORE_PATH}/buffer.json (written by stop()) to pre-populate
+         _buffer and _seen_event_ids; FileNotFoundError silently ignored (first boot
+         after this feature, or file manually deleted)
+3. client.add_event_callback(_on_message, RoomMessageText)
+4. asyncio.create_task(client.sync_forever(since=loaded_sync_token, ...))
        ↓ Matrix server delivers all events missed during downtime from that token forward
+         _seen_event_ids prevents double-insertion if any replayed events were already
+         in the loaded buffer
 ```
 
-No backfill is needed — `sync_forever` catches up from the stored position. If the token is too old and the server has expired it, the sync will fail (not currently handled; treat as a fresh-start edge case).
+No Matrix backfill is needed — `sync_forever` catches up on missed events, and the buffer file provides immediate history for `get_recent_messages()`. If the token is too old and the server has expired it, the sync will fail (not currently handled; treat as a fresh-start edge case).
 
 ### Fresh-start path (no stored token)
 
@@ -305,7 +311,7 @@ Integration tests use a randomly-named Qdrant collection (per test session) and 
 | `BACKFILL_LIMIT` | `100` | Messages per `room_messages()` call |
 | `MESSAGE_BUFFER_SIZE` | `500` | `deque(maxlen=...)` — oldest entries dropped automatically |
 | `SSE_QUEUE_MAXSIZE` | `100` | Per subscriber; drop-oldest on full |
-| `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production |
+| `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production. Also stores `buffer.json` (restart warm-start cache) |
 
 ---
 

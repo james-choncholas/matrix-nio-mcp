@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from collections import deque
@@ -61,8 +62,9 @@ class MatrixMCPClient:
         stored_token = self._client.loaded_sync_token
 
         if stored_token:
-            # Restart: resume from the persisted token; sync_forever delivers all
-            # events missed during downtime without a redundant backfill.
+            # Restart: reload the persisted buffer so get_recent_messages() is
+            # immediately useful, then resume live sync from the stored token.
+            self._load_buffer()
             logger.info("Resuming from stored sync token %s", stored_token)
             self._client.add_event_callback(self._on_message, RoomMessageText)
             self._sync_task = asyncio.create_task(
@@ -93,6 +95,7 @@ class MatrixMCPClient:
             )
 
     async def stop(self) -> None:
+        self._save_buffer()
         if self._sync_task:
             self._sync_task.cancel()
             try:
@@ -149,15 +152,82 @@ class MatrixMCPClient:
         )
         if isinstance(response, nio.ErrorResponse):
             return {"error": str(response)}
+
+        # events_before: reverse-chronological (closest to pivot first)
+        # events_after: chronological (closest to pivot first)
+        events_before = list(response.events_before or [])[:before]
+        events_after = list(response.events_after or [])[:after]
+
+        # Top up the before side by paginating backwards from the context start token.
+        needed = before - len(events_before)
+        if needed > 0:
+            start_token = getattr(response, "start", None)
+            if start_token:
+                extra = await self._paginate_for_context(
+                    room_id, start_token, nio.MessageDirection.back, needed
+                )
+                events_before.extend(extra)
+
+        # Top up the after side by paginating forwards from the context end token.
+        needed = after - len(events_after)
+        if needed > 0:
+            end_token = getattr(response, "end", None)
+            if end_token:
+                extra = await self._paginate_for_context(
+                    room_id, end_token, nio.MessageDirection.front, needed
+                )
+                events_after.extend(extra)
+
         return {
             "event": self._event_to_dict(room_id, response.event) if response.event else None,
-            "before": [self._event_to_dict(room_id, e) for e in (response.events_before or [])],
-            "after": [self._event_to_dict(room_id, e) for e in (response.events_after or [])],
+            "before": [self._event_to_dict(room_id, e) for e in events_before],
+            "after": [self._event_to_dict(room_id, e) for e in events_after],
         }
+
+    async def _paginate_for_context(
+        self,
+        room_id: str,
+        token: str,
+        direction: nio.MessageDirection,
+        limit: int,
+    ) -> list:
+        response: RoomMessagesResponse = await self._client.room_messages(
+            room_id=room_id,
+            start=token,
+            direction=direction,
+            limit=limit,
+        )
+        if isinstance(response, nio.ErrorResponse):
+            return []
+        return list(response.chunk)[:limit]
 
     # -------------------------------------------------------------------------
     # Internal
     # -------------------------------------------------------------------------
+
+    def _save_buffer(self) -> None:
+        path = os.path.join(self._config.matrix_store_path, "buffer.json")
+        try:
+            with open(path, "w") as f:
+                json.dump([r.to_dict() for r in self._buffer], f)
+        except Exception:
+            logger.exception("Failed to save message buffer to %s", path)
+
+    def _load_buffer(self) -> None:
+        path = os.path.join(self._config.matrix_store_path, "buffer.json")
+        try:
+            with open(path) as f:
+                records = json.load(f)
+            for d in records:
+                record = MessageRecord(**d)
+                if record.event_id not in self._seen_event_ids:
+                    self._seen_event_ids.add(record.event_id)
+                    self._buffer.append(record)
+            logger.info("Loaded %d messages from buffer cache", len(records))
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.warning("Failed to load message buffer cache", exc_info=True)
 
     async def _index_initial_sync(self, initial_sync: SyncResponse) -> None:
         if not hasattr(initial_sync, "rooms") or not initial_sync.rooms:
