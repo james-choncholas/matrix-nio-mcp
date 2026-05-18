@@ -148,22 +148,19 @@ async def test_start_passes_initial_sync_next_batch_to_sync_forever(
     mock_nio_client.sync.return_value = initial_sync
     mock_nio_client.joined_rooms.return_value = MagicMock(rooms=[])
 
-    sync_forever_kwargs = {}
-
-    async def capturing_sync_forever(**kwargs):
-        sync_forever_kwargs.update(kwargs)
-
-    mock_nio_client.sync_forever = capturing_sync_forever
-
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
     with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
-        def capture_and_close(coro):
+        def close_coro(coro):
             coro.close()
             return MagicMock()
 
-        create_task.side_effect = capture_and_close
+        create_task.side_effect = close_coro
         await c.start()
-        assert create_task.called
+
+    mock_nio_client.sync_forever.assert_called_once_with(
+        since=initial_sync.next_batch,
+        timeout=30000,
+    )
 
 
 async def test_start_resumes_from_stored_token_on_restart(
