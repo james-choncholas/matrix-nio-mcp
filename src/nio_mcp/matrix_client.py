@@ -62,7 +62,7 @@ class MatrixMCPClient:
 
         stored_token = self._client.loaded_sync_token
 
-        if stored_token:
+        if stored_token and self._is_backfill_complete():
             # Restart: reload the persisted buffer so get_recent_messages() is
             # immediately useful, then resume live sync from the stored token.
             self._load_buffer()
@@ -75,7 +75,24 @@ class MatrixMCPClient:
                 )
             )
         else:
-            # Fresh start: anchor position, backfill history, then begin live sync.
+            # Fresh start (or retry after interrupted backfill): anchor position,
+            # backfill history, then begin live sync.  The sentinel is written only
+            # after both phases complete, so an interruption here is safe to retry.
+            if stored_token:
+                logger.warning(
+                    "Stored sync token found but backfill sentinel absent — "
+                    "previous backfill was interrupted; re-running backfill"
+                )
+
+                # nio.AsyncClient.sync() falls back to self.loaded_sync_token when
+                # no explicit `since` is given (async_client.py:1220).  On a retry
+                # that would produce an incremental sync from the crash token, so
+                # the returned prev_batch is newer than the original anchor.  With a
+                # capped backfill_pages_max, post-crash traffic can then exhaust all
+                # pages before reaching pre-crash history.  Clearing it forces a
+                # genuinely tokenless sync and a prev_batch at the true room head.
+                self._client.loaded_sync_token = ""
+
             logger.info("Performing initial sync to anchor timeline position")
             initial_sync: SyncResponse = await self._client.sync(full_state=True)
 
@@ -84,6 +101,8 @@ class MatrixMCPClient:
 
             logger.info("Indexing initial sync timeline events")
             await self._index_initial_sync(initial_sync)
+
+            self._mark_backfill_complete()
 
             self._client.add_event_callback(self._on_message, RoomMessageText)
 
@@ -205,6 +224,20 @@ class MatrixMCPClient:
     # -------------------------------------------------------------------------
     # Internal
     # -------------------------------------------------------------------------
+
+    @property
+    def _backfill_sentinel_path(self) -> str:
+        return os.path.join(self._config.matrix_store_path, "backfill_complete")
+
+    def _is_backfill_complete(self) -> bool:
+        return os.path.exists(self._backfill_sentinel_path)
+
+    def _mark_backfill_complete(self) -> None:
+        try:
+            with open(self._backfill_sentinel_path, "w") as f:
+                f.write("")
+        except Exception:
+            logger.exception("Failed to write backfill sentinel %s", self._backfill_sentinel_path)
 
     def _save_buffer(self) -> None:
         path = os.path.join(self._config.matrix_store_path, "buffer.json")

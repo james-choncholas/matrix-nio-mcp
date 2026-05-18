@@ -86,6 +86,8 @@ Returns the current server state. Key fields used here:
 
 `full_state=True` ensures `rooms.join` is populated even for rooms with no events in this sync window. It also causes nio to populate `client.rooms[room_id].users` with the full member list including display names — this is relied on by `_resolve_display_name()` during backfill and initial-sync indexing to look up human-readable sender names.
 
+Non-obvious nio behavior: `AsyncClient.sync()` falls back to `client.loaded_sync_token` when `since=` is omitted. On the interrupted-backfill retry path, `start()` clears `loaded_sync_token` before calling `sync(full_state=True)` so the request is truly tokenless; otherwise nio would issue an incremental sync from the persisted crash token.
+
 ### `sync_forever(since=..., timeout=30000)`
 
 ```python
@@ -189,27 +191,54 @@ if isinstance(response, nio.ErrorResponse):
 
 ## Startup sequence in detail
 
-Understanding this sequence is critical for any change to `matrix_client.py:start()`. There are two distinct paths depending on whether a sync token was persisted from a previous run.
+Understanding this sequence is critical for any change to `matrix_client.py:start()`. There are three practical startup paths depending on whether nio restored a sync token and whether local bootstrap was previously marked complete.
 
-### Restart path (stored token present)
+### Restart path (stored token present, bootstrap complete)
 
-`client.loaded_sync_token` is populated by nio after `restore_login()` when `store_sync_tokens=True` and a prior sync has been persisted to the store. When it is non-empty, `start()` skips the initial sync and backfill entirely:
+`client.loaded_sync_token` is populated by nio after `restore_login()` when `store_sync_tokens=True` and a prior sync has been persisted to the store. `start()` only takes the fast restart path when that token is non-empty **and** `{MATRIX_STORE_PATH}/backfill_complete` exists:
 
 ```
 1. os.makedirs + AsyncClient + restore_login  (same as fresh start)
        ↓ loaded_sync_token is now set from the store
-2. _load_buffer()
+2. _is_backfill_complete()
+       ↓ checks {MATRIX_STORE_PATH}/backfill_complete
+3. _load_buffer()
        ↓ reads {MATRIX_STORE_PATH}/buffer.json (written by stop()) to pre-populate
          _buffer and _seen_event_ids; FileNotFoundError silently ignored (first boot
          after this feature, or file manually deleted)
-3. client.add_event_callback(_on_message, RoomMessageText)
-4. asyncio.create_task(client.sync_forever(since=loaded_sync_token, ...))
+4. client.add_event_callback(_on_message, RoomMessageText)
+5. asyncio.create_task(client.sync_forever(since=loaded_sync_token, ...))
        ↓ Matrix server delivers all events missed during downtime from that token forward
          _seen_event_ids prevents double-insertion if any replayed events were already
          in the loaded buffer
 ```
 
 No Matrix backfill is needed — `sync_forever` catches up on missed events, and the buffer file provides immediate history for `get_recent_messages()`. If the token is too old and the server has expired it, the sync will fail (not currently handled; treat as a fresh-start edge case).
+
+### Retry path (stored token present, bootstrap incomplete)
+
+This is the failure-recovery path for "first sync succeeded, process died before `_backfill()` / `_index_initial_sync()` finished". nio has already persisted a sync token, but the local sentinel is absent, so `start()` must **not** trust the token as evidence that bootstrap completed:
+
+```
+1. os.makedirs + AsyncClient + restore_login
+       ↓ loaded_sync_token is restored from the nio store
+2. _is_backfill_complete() returns false
+       ↓ no {MATRIX_STORE_PATH}/backfill_complete means the previous bootstrap
+         never reached the post-indexing commit point
+3. client.loaded_sync_token = ""
+       ↓ forces the next sync(full_state=True) call to be truly tokenless;
+         otherwise nio would silently fall back to the restored token
+4. initial_sync = await client.sync(full_state=True)
+       ↓ captures a fresh current timeline window and per-room prev_batch tokens
+5. _backfill(initial_sync)
+6. _index_initial_sync(initial_sync)
+7. _mark_backfill_complete()
+       ↓ writes {MATRIX_STORE_PATH}/backfill_complete only after both phases finish
+8. client.add_event_callback(_on_message, RoomMessageText)
+9. asyncio.create_task(client.sync_forever(since=initial_sync.next_batch, ...))
+```
+
+This retry path guarantees the process will not permanently skip bootstrap just because nio persisted `next_batch` before local indexing finished. A moved retry anchor may consume part of a bounded backfill budget; that is intentional and controlled by `BACKFILL_PAGES_MAX`.
 
 ### Fresh-start path (no stored token)
 
@@ -231,13 +260,15 @@ No Matrix backfill is needed — `sync_forever` catches up on missed events, and
        ↓ indexes initial_sync.rooms.join[*].timeline.events — the slice between
           prev_batch and next_batch that backfill never reaches and sync_forever
           never replays; without this step those messages are silently dropped
-6. client.add_event_callback(_on_message, RoomMessageText)
+6. _mark_backfill_complete()
+       ↓ writes {MATRIX_STORE_PATH}/backfill_complete only after bootstrap finishes
+7. client.add_event_callback(_on_message, RoomMessageText)
        ↓ registered AFTER backfill + initial-sync indexing to avoid double-indexing
-7. asyncio.create_task(client.sync_forever(since=initial_sync.next_batch, ...))
+8. asyncio.create_task(client.sync_forever(since=initial_sync.next_batch, ...))
        ↓ live sync starts from the exact token captured before backfill
 ```
 
-Steps 5, 5.5, and 7 together cover the full timeline without gaps or overlaps: backfill covers everything before `prev_batch`, `_index_initial_sync` covers `prev_batch`→`next_batch`, and `sync_forever` covers everything after `next_batch`. `_seen_event_ids` provides a secondary duplicate guard across all three phases.
+Steps 5, 5.5, and 8 together cover the full timeline without gaps or overlaps: backfill covers everything before `prev_batch`, `_index_initial_sync` covers `prev_batch`→`next_batch`, and `sync_forever` covers everything after `next_batch`. `_seen_event_ids` provides a secondary duplicate guard across all three phases. The sentinel write between bootstrap and live sync is the durable "commit point" that distinguishes a complete bootstrap from one that must be retried.
 
 ---
 
@@ -312,7 +343,7 @@ Integration tests use a randomly-named Qdrant collection (per test session) and 
 | `BACKFILL_LIMIT` | `100` | Messages per `room_messages()` call |
 | `MESSAGE_BUFFER_SIZE` | `500` | `deque(maxlen=...)` — oldest entries dropped automatically |
 | `SSE_QUEUE_MAXSIZE` | `100` | Per subscriber; drop-oldest on full |
-| `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production. Also stores `buffer.json` (restart warm-start cache) |
+| `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production. Also stores `buffer.json` (restart warm-start cache) and `backfill_complete` (bootstrap sentinel) |
 
 ---
 

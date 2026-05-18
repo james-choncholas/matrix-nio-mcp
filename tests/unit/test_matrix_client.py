@@ -164,10 +164,14 @@ async def test_start_passes_initial_sync_next_batch_to_sync_forever(
 
 
 async def test_start_resumes_from_stored_token_on_restart(
-    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
     mock_nio_client.loaded_sync_token = "stored_t99"
+
+    # Create the sentinel so start() takes the restart path.
+    (tmp_path / "backfill_complete").write_text("")
 
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
     with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
