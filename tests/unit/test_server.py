@@ -28,6 +28,17 @@ def mock_matrix_client():
     server_module._matrix_client = None
 
 
+SEARCH_RESULT = SearchResult(
+    event_id="$r:x",
+    room_id="!r:x",
+    sender="@a:x",
+    sender_name="A",
+    body="Found",
+    timestamp=1700000001000,
+    score=0.99,
+)
+
+
 @pytest.fixture
 def mock_embedding_and_store():
     with (
@@ -47,19 +58,8 @@ def mock_embedding_and_store():
         emb_cls.return_value = emb_instance
 
         vs_instance = AsyncMock()
-        vs_instance.search = AsyncMock(
-            return_value=[
-                SearchResult(
-                    event_id="$r:x",
-                    room_id="!r:x",
-                    sender="@a:x",
-                    sender_name="A",
-                    body="Found",
-                    timestamp=1,
-                    score=0.99,
-                )
-            ]
-        )
+        vs_instance.search = AsyncMock(return_value=[SEARCH_RESULT])
+        vs_instance.scroll = AsyncMock(return_value=[SEARCH_RESULT])
         vs_cls.return_value = vs_instance
 
         yield emb_instance, vs_instance
@@ -91,6 +91,34 @@ async def test_search_messages_embeds_and_searches(mock_embedding_and_store):
     vs.search.assert_called_once()
     assert isinstance(data, list)
     assert data[0]["score"] == 0.99
+
+
+async def test_search_messages_passes_timestamp_filters_to_search(mock_embedding_and_store):
+    emb, vs = mock_embedding_and_store
+    await _call("search_messages", {"query": "hello", "after_ts": 1000, "before_ts": 2000})
+    _, kwargs = vs.search.call_args
+    assert kwargs["after_ts"] == 1000
+    assert kwargs["before_ts"] == 2000
+
+
+async def test_search_messages_time_only_uses_scroll(mock_embedding_and_store):
+    emb, vs = mock_embedding_and_store
+    data = await _call("search_messages", {"after_ts": 1700000000000, "before_ts": 1700000002000})
+    emb.embed.assert_not_called()
+    vs.scroll.assert_called_once()
+    assert isinstance(data, list)
+
+
+async def test_search_messages_no_args_returns_error(mock_embedding_and_store):
+    data = await _call("search_messages", {})
+    assert "error" in data
+
+
+async def test_search_messages_whitespace_query_uses_scroll(mock_embedding_and_store):
+    emb, vs = mock_embedding_and_store
+    await _call("search_messages", {"query": "   ", "after_ts": 1700000000000})
+    emb.embed.assert_not_called()
+    vs.scroll.assert_called_once()
 
 
 async def test_send_message_delegates_to_client(mock_matrix_client):

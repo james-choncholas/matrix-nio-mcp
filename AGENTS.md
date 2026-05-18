@@ -36,7 +36,7 @@ MatrixMCPClient
   └── WebhookDispatcher  (dispatch() called on each indexed live message)
 ```
 
-`search_messages` is the one MCP tool that constructs its own `EmbeddingClient` and `VectorStore` per call rather than reusing the shared instances. This is intentional simplicity — searches are infrequent and the clients are stateless.
+`search_messages` is the one MCP tool that constructs its own `EmbeddingClient` and `VectorStore` per call rather than reusing the shared instances. This is intentional simplicity — searches are infrequent and the clients are stateless. When `query` is absent or whitespace-only, `EmbeddingClient` is not constructed at all and `VectorStore.scroll()` is called instead of `VectorStore.search()`.
 
 ---
 
@@ -266,6 +266,12 @@ Payload stored per point: `event_id`, `room_id`, `sender` (Matrix ID), `sender_n
 The text passed to the embedding model is `"{sender_name}: {body}"` — sender name is baked into the vector so searches like "what did Alice say about X" surface results by author naturally. `sender` (the raw Matrix ID) is kept separately for filtered queries. Old records indexed before `sender_name` was added fall back to `sender` when read back.
 
 `init_collection()` is idempotent — checks existing collections before creating. Called once at startup before `matrix_client.start()`.
+
+### `VectorStore` search vs scroll
+
+`search(vector, ...)` — cosine similarity search via Qdrant's `/search` endpoint. Accepts optional `after_ts` / `before_ts` (Unix ms) which become a `Range` filter on the `timestamp` payload field, combined with any `room_id` / `sender` filters via `_build_filter()`.
+
+`scroll(...)` — no query vector; uses Qdrant's `/scroll` endpoint. Called by `search_messages` when `query` is absent or whitespace-only. Returns `SearchResult` with `score=0.0`. Accepts the same filter params. Qdrant `scroll` returns points in internal storage order (not by timestamp), so results are not chronologically sorted.
 
 ---
 

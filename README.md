@@ -5,7 +5,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for [Matrix](
 ## Features
 
 - **`get_recent_messages`** — fetch the most recent messages across all joined rooms, with optional filtering by sender or room
-- **`search_messages`** — semantic similarity search over all indexed message history via OpenAI embeddings + Qdrant
+- **`search_messages`** — search indexed message history by semantic similarity, time range, or both
 - **`get_message_context`** — retrieve messages surrounding a specific event (useful after a search hit)
 - **`send_message`** — send a text message to any joined room
 - **Webhooks** — POST to a configurable URL and/or stream events via SSE whenever a new message arrives
@@ -100,16 +100,22 @@ Returns the `k` most recent messages from the in-memory buffer (populated by bac
 
 ### `search_messages`
 
-Semantic search over all indexed messages. The query is embedded with OpenAI and matched against Qdrant.
+Search indexed messages by semantic similarity, time range, or both. At least one of `query`, `after_ts`, or `before_ts` must be provided.
 
 ```json
 {
   "query": "project standup notes",
-  "limit": 10
+  "limit": 10,
+  "after_ts": 1700000000000,
+  "before_ts": 1700086400000
 }
 ```
 
-Returns the same message fields plus a `score` (cosine similarity, 0–1). Use the returned `event_id` and `room_id` with `get_message_context` to retrieve surrounding messages.
+- **`query`** — natural-language search; embedded with OpenAI and matched by cosine similarity against Qdrant.
+- **`after_ts` / `before_ts`** — Unix millisecond timestamps (optional). Filter results to a time window.
+- If only `after_ts`/`before_ts` are given (no `query`), up to `limit` messages in that window are returned newest-first by timestamp with `score: 0`.
+
+Returns the same message fields as `get_recent_messages` plus a `score` (cosine similarity, 0–1, or 0 for time-only queries). Use the returned `event_id` and `room_id` with `get_message_context` to retrieve surrounding messages.
 
 ### `get_message_context`
 

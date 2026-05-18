@@ -46,6 +46,7 @@ async def test_init_collection_creates_when_absent(store, mock_qdrant):
     mock_qdrant.get_collections.return_value = existing
     await store.init_collection()
     mock_qdrant.create_collection.assert_called_once()
+    mock_qdrant.create_payload_index.assert_called_once()
     call_kwargs = mock_qdrant.create_collection.call_args.kwargs
     assert call_kwargs["collection_name"] == "test_col"
 
@@ -58,6 +59,20 @@ async def test_init_collection_skips_when_present(store, mock_qdrant):
     mock_qdrant.get_collections.return_value = existing
     await store.init_collection()
     mock_qdrant.create_collection.assert_not_called()
+    mock_qdrant.create_payload_index.assert_called_once()
+
+
+async def test_init_collection_creates_timestamp_index(store, mock_qdrant):
+    existing = MagicMock()
+    existing.collections = []
+    mock_qdrant.get_collections.return_value = existing
+    await store.init_collection()
+    call_kwargs = mock_qdrant.create_payload_index.call_args.kwargs
+    assert call_kwargs["collection_name"] == "test_col"
+    assert call_kwargs["field_name"] == "timestamp"
+    schema = call_kwargs["field_schema"]
+    assert schema.type == "integer"
+    assert schema.is_principal is True
 
 
 async def test_upsert_builds_correct_payload(store, mock_qdrant):
@@ -113,6 +128,55 @@ async def test_search_with_room_filter_passes_filter(store, mock_qdrant):
     await store.search(VECTOR, room_id="!room:example.org")
     call_kwargs = mock_qdrant.search.call_args.kwargs
     assert call_kwargs["query_filter"] is not None
+
+
+async def test_search_with_timestamp_filter_passes_range(store, mock_qdrant):
+    mock_qdrant.search.return_value = []
+    await store.search(VECTOR, after_ts=1000, before_ts=2000)
+    call_kwargs = mock_qdrant.search.call_args.kwargs
+    f = call_kwargs["query_filter"]
+    assert f is not None
+    ts_conditions = [c for c in f.must if c.key == "timestamp"]
+    assert len(ts_conditions) == 1
+    assert ts_conditions[0].range.gte == 1000
+    assert ts_conditions[0].range.lte == 2000
+
+
+async def test_scroll_returns_search_results_with_zero_score(store, mock_qdrant):
+    point = MagicMock()
+    point.payload = {
+        "event_id": "$s:example.org",
+        "room_id": "!room:example.org",
+        "sender": "@alice:example.org",
+        "sender_name": "Alice",
+        "body": "scrolled",
+        "timestamp": 1700000000000,
+    }
+    mock_qdrant.scroll.return_value = ([point], None)
+    results = await store.scroll(limit=5, after_ts=1000, before_ts=2000)
+    assert len(results) == 1
+    assert results[0].score == 0.0
+    assert results[0].body == "scrolled"
+
+
+async def test_scroll_orders_by_timestamp_desc(store, mock_qdrant):
+    mock_qdrant.scroll.return_value = ([], None)
+    await store.scroll(limit=5)
+    call_kwargs = mock_qdrant.scroll.call_args.kwargs
+    order_by = call_kwargs["order_by"]
+    assert order_by.key == "timestamp"
+    assert order_by.direction == "desc"
+
+
+async def test_scroll_with_timestamp_filter_passes_range(store, mock_qdrant):
+    mock_qdrant.scroll.return_value = ([], None)
+    await store.scroll(after_ts=1000, before_ts=2000)
+    call_kwargs = mock_qdrant.scroll.call_args.kwargs
+    f = call_kwargs["scroll_filter"]
+    assert f is not None
+    ts_conditions = [c for c in f.must if c.key == "timestamp"]
+    assert ts_conditions[0].range.gte == 1000
+    assert ts_conditions[0].range.lte == 2000
 
 
 async def test_close_calls_client_close(store, mock_qdrant):
