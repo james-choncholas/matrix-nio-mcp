@@ -281,16 +281,11 @@ The text passed to the embedding model is `"{sender_name}: {body}"` — sender n
 
 ## Running tests
 
-```bash
-# Create venv and install deps (libolm not required for unit tests)
-python3 -m venv .venv
-source .venv/bin/activate
-pip install matrix-nio mcp qdrant-client openai fastapi "uvicorn[standard]" \
-    pydantic-settings httpx anyio sse-starlette \
-    pytest pytest-asyncio pytest-mock respx
+A pre-built `.venv` is checked in at the repo root. Use it directly — no setup needed:
 
+```bash
 # Unit tests — no external services
-pytest tests/unit/ -v
+.venv/bin/pytest tests/unit/ -v
 
 # Integration tests — Qdrant must be running
 docker compose up qdrant -d

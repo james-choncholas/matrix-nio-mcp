@@ -8,6 +8,7 @@ RECORD = MessageRecord(
     event_id="$abc123:example.org",
     room_id="!room:example.org",
     sender="@alice:example.org",
+    sender_name="Alice",
     body="Hello world",
     timestamp=1700000000000,
 )

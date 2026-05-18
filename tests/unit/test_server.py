@@ -9,6 +9,7 @@ RECORD = MessageRecord(
     event_id="$evt:example.org",
     room_id="!room:example.org",
     sender="@alice:example.org",
+    sender_name="Alice",
     body="Hello world",
     timestamp=1700000000000,
 )
@@ -52,6 +53,7 @@ def mock_embedding_and_store():
                     event_id="$r:x",
                     room_id="!r:x",
                     sender="@a:x",
+                    sender_name="A",
                     body="Found",
                     timestamp=1,
                     score=0.99,

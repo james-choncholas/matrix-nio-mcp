@@ -61,6 +61,7 @@ def mock_nio_client():
         cls.return_value = instance
         instance.restore_login = MagicMock()
         instance.add_event_callback = MagicMock()
+        instance.rooms = {}
         yield instance
 
 
@@ -279,23 +280,23 @@ def _add_records(client, records):
 
 async def test_get_recent_messages_returns_last_k(client):
     for i in range(10):
-        client._buffer.append(MessageRecord(f"$e{i}:x", "!r:x", "@a:x", f"msg{i}", i))
+        client._buffer.append(MessageRecord(f"$e{i}:x", "!r:x", "@a:x", "A", f"msg{i}", i))
     results = await client.get_recent_messages(k=3)
     assert len(results) == 3
     assert results[-1].body == "msg9"
 
 
 async def test_get_recent_messages_filters_by_sender(client):
-    client._buffer.append(MessageRecord("$1:x", "!r:x", "@alice:x", "hi", 1))
-    client._buffer.append(MessageRecord("$2:x", "!r:x", "@bob:x", "hey", 2))
+    client._buffer.append(MessageRecord("$1:x", "!r:x", "@alice:x", "Alice", "hi", 1))
+    client._buffer.append(MessageRecord("$2:x", "!r:x", "@bob:x", "Bob", "hey", 2))
     results = await client.get_recent_messages(k=10, sender="@alice:x")
     assert all(r.sender == "@alice:x" for r in results)
     assert len(results) == 1
 
 
 async def test_get_recent_messages_filters_by_room(client):
-    client._buffer.append(MessageRecord("$1:x", "!room1:x", "@a:x", "hi", 1))
-    client._buffer.append(MessageRecord("$2:x", "!room2:x", "@a:x", "hey", 2))
+    client._buffer.append(MessageRecord("$1:x", "!room1:x", "@a:x", "A", "hi", 1))
+    client._buffer.append(MessageRecord("$2:x", "!room2:x", "@a:x", "A", "hey", 2))
     results = await client.get_recent_messages(k=10, room_id="!room1:x")
     assert all(r.room_id == "!room1:x" for r in results)
     assert len(results) == 1
