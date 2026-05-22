@@ -2,8 +2,6 @@
 set -eu
 
 CONFIG_PATH="/data/homeserver.yaml"
-LOG_PATH="/homeserver.log"
-
 if [ ! -f "${CONFIG_PATH}" ]; then
   python -m synapse.app.homeserver \
     --server-name localhost \
@@ -38,9 +36,28 @@ else
   printf '\ndaemonize: false\n' >> "${CONFIG_PATH}"
 fi
 
-# Synapse's generated log config writes to /homeserver.log. Point that file at
-# the container log stream so compose logs capture startup and runtime output.
-rm -f "${LOG_PATH}"
-ln -s /proc/1/fd/1 "${LOG_PATH}"
+LOG_CONFIG_PATH="$(awk -F': ' '/^log_config:/ {gsub(/"/, "", $2); print $2; exit}' "${CONFIG_PATH}")"
+if [ -z "${LOG_CONFIG_PATH}" ]; then
+  LOG_CONFIG_PATH="/data/localhost.log.config"
+fi
+
+# Replace Synapse's generated file logger with a console logger so startup and
+# runtime logs are visible in `docker compose logs` across local Docker and DIND.
+cat > "${LOG_CONFIG_PATH}" <<'EOF'
+version: 1
+disable_existing_loggers: false
+formatters:
+  generic:
+    format: '%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s'
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: generic
+    stream: ext://sys.stdout
+root:
+  level: INFO
+  handlers: [console]
+EOF
 
 exec python -m synapse.app.homeserver --config-path "${CONFIG_PATH}"
