@@ -255,6 +255,7 @@ async def test_on_message_adds_to_buffer_and_indexes(client, mock_nio_client):
     room.room_id = "!room:example.org"
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
 
@@ -268,12 +269,112 @@ async def test_on_message_deduplicates_event_ids(client):
     room.room_id = "!room:example.org"
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
     await client._on_message(room, event)
 
     assert len(client._buffer) == 1
     assert client._vector_store.upsert.call_count == 1
+
+
+async def test_on_message_clears_pending_on_success(client):
+    room = MagicMock()
+    room.room_id = "!room:example.org"
+    event = _make_text_event()
+    client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+    client._save_pending_index = MagicMock()
+
+    await client._on_message(room, event)
+
+    assert event.event_id not in client._pending_index
+
+
+async def test_on_message_retains_pending_on_index_failure(client):
+    room = MagicMock()
+    room.room_id = "!room:example.org"
+    event = _make_text_event()
+    client._embedding_client.embed = AsyncMock(side_effect=RuntimeError("openai down"))
+    client._save_pending_index = MagicMock()
+
+    await client._on_message(room, event)
+
+    assert event.event_id in client._pending_index
+    # message is still in buffer even though indexing failed
+    assert len(client._buffer) == 1
+
+
+async def test_retry_pending_index_reindexes_and_clears(client):
+    record = MessageRecord("$pend:x", "!r:x", "@a:x", "A", "lost msg", 1000)
+    client._pending_index = {record.event_id: record}
+    client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+    client._save_pending_index = MagicMock()
+
+    await client._retry_pending_index()
+
+    client._vector_store.upsert.assert_called_once()
+    assert record.event_id not in client._pending_index
+    assert record.event_id in client._seen_event_ids
+    assert any(r.event_id == record.event_id for r in client._buffer)
+
+
+async def test_retry_pending_index_skips_already_seen(client):
+    record = MessageRecord("$pend:x", "!r:x", "@a:x", "A", "lost msg", 1000)
+    client._pending_index = {record.event_id: record}
+    client._seen_event_ids.add(record.event_id)
+    client._buffer.append(record)
+    client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+    client._save_pending_index = MagicMock()
+
+    await client._retry_pending_index()
+
+    # should index exactly once; buffer should not have a duplicate
+    client._vector_store.upsert.assert_called_once()
+    assert len([r for r in client._buffer if r.event_id == record.event_id]) == 1
+
+
+async def test_retry_pending_index_leaves_failures_pending(client):
+    record = MessageRecord("$pend:x", "!r:x", "@a:x", "A", "lost msg", 1000)
+    client._pending_index = {record.event_id: record}
+    client._embedding_client.embed = AsyncMock(side_effect=RuntimeError("qdrant down"))
+    client._save_pending_index = MagicMock()
+
+    await client._retry_pending_index()
+
+    assert record.event_id in client._pending_index
+
+
+async def test_on_message_retains_pending_on_webhook_failure(client):
+    """Webhook failure must keep the record in the pending journal for retry."""
+    room = MagicMock()
+    room.room_id = "!room:example.org"
+    event = _make_text_event()
+    client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+    client._webhook_dispatcher.dispatch = AsyncMock(side_effect=RuntimeError("webhook down"))
+    client._save_pending_index = MagicMock()
+
+    await client._on_message(room, event)
+
+    assert event.event_id in client._pending_index
+    # Qdrant upsert was still attempted before webhook
+    client._vector_store.upsert.assert_called_once()
+
+
+async def test_on_message_defers_indexing_when_pre_save_fails(client):
+    """If the pre-index journal write fails, indexing must not run.
+
+    The record stays in _pending_index so the next successful write for any
+    event carries it to disk, giving it a restart-recovery path.
+    """
+    room = MagicMock()
+    room.room_id = "!room:example.org"
+    event = _make_text_event()
+    client._save_pending_index = MagicMock(side_effect=OSError("disk full"))
+
+    await client._on_message(room, event)
+
+    client._vector_store.upsert.assert_not_called()
+    assert event.event_id in client._pending_index
 
 
 # --- get_recent_messages ---

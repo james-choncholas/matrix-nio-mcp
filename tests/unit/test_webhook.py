@@ -104,8 +104,16 @@ async def test_dispatch_includes_hmac_signature():
 
 
 @respx.mock
-async def test_dispatch_webhook_failure_does_not_raise():
+async def test_dispatch_webhook_failure_raises():
     respx.post("http://example.com/hook").mock(side_effect=httpx.ConnectError("refused"))
     d = WebhookDispatcher(webhook_url="http://example.com/hook", queue_maxsize=10)
-    # Should log but not raise
-    await d.dispatch(RECORD)
+    with pytest.raises(httpx.ConnectError):
+        await d.dispatch(RECORD)
+
+
+@respx.mock
+async def test_dispatch_http_error_status_raises():
+    respx.post("http://example.com/hook").mock(return_value=httpx.Response(503))
+    d = WebhookDispatcher(webhook_url="http://example.com/hook", queue_maxsize=10)
+    with pytest.raises(httpx.HTTPStatusError):
+        await d.dispatch(RECORD)

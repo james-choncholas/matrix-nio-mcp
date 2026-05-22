@@ -69,12 +69,9 @@ class WebhookDispatcher:
                 hashlib.sha256,
             ).hexdigest()
             headers["X-Nio-MCP-Signature"] = f"sha256={sig}"
-        try:
-            async with self._get_http() as client:
-                resp = await client.post(self._webhook_url, content=payload, headers=headers)
-                resp.raise_for_status()
-        except Exception as exc:
-            logger.error("Webhook POST to %s failed: %s", self._webhook_url, exc)
+        async with self._get_http() as client:
+            resp = await client.post(self._webhook_url, content=payload, headers=headers)
+            resp.raise_for_status()
 
     async def close(self) -> None:
         if self._http and not self._http.is_closed:

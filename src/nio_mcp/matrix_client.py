@@ -44,6 +44,8 @@ class MatrixMCPClient:
         self._buffer: deque[MessageRecord] = deque(maxlen=config.message_buffer_size)
         self._seen_event_ids: set[str] = set()
         self._sync_task: Optional[asyncio.Task] = None
+        # Records written here before indexing; cleared on success; replayed at startup.
+        self._pending_index: dict[str, MessageRecord] = {}
 
     async def start(self) -> None:
         os.makedirs(self._config.matrix_store_path, exist_ok=True)
@@ -66,6 +68,8 @@ class MatrixMCPClient:
             # Restart: reload the persisted buffer so get_recent_messages() is
             # immediately useful, then resume live sync from the stored token.
             self._load_buffer()
+            self._load_pending_index()
+            await self._retry_pending_index()
             logger.info("Resuming from stored sync token %s", stored_token)
             self._client.add_event_callback(self._on_message, RoomMessageText)
             self._sync_task = asyncio.create_task(
@@ -104,6 +108,9 @@ class MatrixMCPClient:
 
             self._mark_backfill_complete()
 
+            self._load_pending_index()
+            await self._retry_pending_index()
+
             self._client.add_event_callback(self._on_message, RoomMessageText)
 
             logger.info("Starting live sync from token %s", initial_sync.next_batch)
@@ -116,6 +123,10 @@ class MatrixMCPClient:
 
     async def stop(self) -> None:
         self._save_buffer()
+        try:
+            self._save_pending_index()
+        except Exception:
+            logger.exception("Failed to flush pending index on shutdown; unindexed events may be lost")
         if self._sync_task:
             self._sync_task.cancel()
             try:
@@ -263,6 +274,57 @@ class MatrixMCPClient:
         except Exception:
             logger.warning("Failed to load message buffer cache", exc_info=True)
 
+    @property
+    def _pending_index_path(self) -> str:
+        return os.path.join(self._config.matrix_store_path, "pending_index.json")
+
+    def _save_pending_index(self) -> None:
+        """Write pending index atomically with fsync. Raises on failure."""
+        path = self._pending_index_path
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({eid: r.to_dict() for eid, r in self._pending_index.items()}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    def _load_pending_index(self) -> None:
+        try:
+            with open(self._pending_index_path) as f:
+                data = json.load(f)
+            self._pending_index = {eid: MessageRecord(**d) for eid, d in data.items()}
+            if self._pending_index:
+                logger.info("Loaded %d pending-index records from disk", len(self._pending_index))
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.warning("Failed to load pending index", exc_info=True)
+
+    async def _retry_pending_index(self) -> None:
+        if not self._pending_index:
+            return
+        logger.info("Re-indexing %d messages from pending index", len(self._pending_index))
+        succeeded: list[str] = []
+        for eid, record in list(self._pending_index.items()):
+            if record.event_id not in self._seen_event_ids:
+                self._seen_event_ids.add(record.event_id)
+                self._buffer.append(record)
+            try:
+                await self._index_message(record)
+                succeeded.append(eid)
+            except Exception:
+                logger.exception("Failed to re-index pending message %s", record.event_id)
+        for eid in succeeded:
+            del self._pending_index[eid]
+        try:
+            self._save_pending_index()
+        except Exception:
+            logger.warning(
+                "Re-indexed %d pending messages but could not update the journal; "
+                "they will be idempotently re-indexed on next startup",
+                len(succeeded),
+            )
+
     async def _index_initial_sync(self, initial_sync: SyncResponse) -> None:
         if not hasattr(initial_sync, "rooms") or not initial_sync.rooms:
             return
@@ -369,15 +431,36 @@ class MatrixMCPClient:
             timestamp=event.server_timestamp,
         )
         self._buffer.append(record)
-        await self._index_message(record)
+        # Register as pending before indexing so a crash leaves it recoverable.
+        self._pending_index[record.event_id] = record
+        try:
+            self._save_pending_index()
+        except Exception:
+            logger.error(
+                "Failed to persist pending index for %s; deferring indexing until next startup",
+                record.event_id,
+            )
+            return
+        try:
+            await self._index_message(record)
+            del self._pending_index[record.event_id]
+            try:
+                self._save_pending_index()
+            except Exception:
+                logger.warning(
+                    "Indexed %s but could not clear pending index; "
+                    "record will be idempotently re-indexed on next startup",
+                    record.event_id,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to index message %s; will retry on next startup", record.event_id
+            )
 
     async def _index_message(self, record: MessageRecord) -> None:
-        try:
-            vector = await self._embedding_client.embed(f"{record.sender_name}: {record.body}")
-            await self._vector_store.upsert(record, vector)
-            await self._webhook_dispatcher.dispatch(record)
-        except Exception:
-            logger.exception("Failed to index message %s", record.event_id)
+        vector = await self._embedding_client.embed(f"{record.sender_name}: {record.body}")
+        await self._vector_store.upsert(record, vector)
+        await self._webhook_dispatcher.dispatch(record)
 
     async def _batch_index(self, records: list[MessageRecord]) -> None:
         if not records:
