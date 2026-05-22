@@ -1,0 +1,63 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git gcc libolm3 libolm-dev
+      - name: Checkout repository
+        uses: https://github.com/actions/checkout@v4
+      - name: Set up Python
+        uses: https://github.com/actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[test]"
+      - name: Run unit tests
+        run: python -m pytest tests/unit/ -v
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            docker.io \
+            docker-compose \
+            gcc \
+            git \
+            libolm3 \
+            libolm-dev
+      - name: Checkout repository
+        uses: https://github.com/actions/checkout@v4
+      - name: Set up Python
+        uses: https://github.com/actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[test]"
+      - name: Verify Docker access
+        run: docker version
+      - name: Run unit tests
+        run: pytest tests/unit/ -v
+      - name: Run integration tests
+        run: sh ./scripts/test-matrix-integration.sh

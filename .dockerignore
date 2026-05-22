@@ -1,0 +1,11 @@
+.git
+.gitea
+.pytest_cache
+.venv
+__pycache__
+build
+dist
+htmlcov
+plan_rev*.md
+tests
+CLAUDE.md

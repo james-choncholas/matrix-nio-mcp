@@ -8,11 +8,10 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY pyproject.toml .
-# Install deps first (layer cached until pyproject.toml changes)
-RUN pip install --no-cache-dir -e ".[e2e]"
-
 COPY src/ src/
+COPY pyproject.toml .
+
+RUN pip install --no-cache-dir .
 
 # Nio E2EE store is mounted here at runtime
 VOLUME ["/data/nio_store"]
