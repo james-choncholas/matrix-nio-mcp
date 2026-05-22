@@ -485,6 +485,12 @@ class MatrixMCPClient:
                 await self._vector_store.upsert(record, vector)
         except Exception:
             logger.exception("Batch indexing failed for %d records", len(records))
+            for record in records:
+                self._pending_index[record.event_id] = record
+            try:
+                self._save_pending_index()
+            except Exception:
+                logger.warning("Failed to persist pending index after batch failure")
 
     def _sender_display_name(self, sender: str) -> str:
         if sender.startswith("@") and ":" in sender:

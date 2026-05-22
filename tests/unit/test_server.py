@@ -179,3 +179,23 @@ async def test_tool_exception_returns_error_dict(mock_matrix_client):
     data = await _call("get_recent_messages", {})
     assert "error" in data
     assert "boom" in data["error"]
+
+
+async def test_call_tool_raises_runtime_error_when_client_not_initialized():
+    original = server_module._matrix_client
+    server_module._matrix_client = None
+    try:
+        with pytest.raises(RuntimeError, match="Matrix client not initialised"):
+            await server_module.call_tool("get_recent_messages", {})
+    finally:
+        server_module._matrix_client = original
+
+
+async def test_sse_endpoint_raises_runtime_error_when_dispatcher_not_initialized():
+    original = server_module._webhook_dispatcher
+    server_module._webhook_dispatcher = None
+    try:
+        with pytest.raises(RuntimeError, match="Webhook dispatcher not initialised"):
+            await server_module.sse_endpoint()
+    finally:
+        server_module._webhook_dispatcher = original

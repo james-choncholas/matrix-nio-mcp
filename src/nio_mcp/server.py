@@ -115,7 +115,8 @@ async def list_tools() -> list[types.Tool]:
 
 @mcp.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    assert _matrix_client is not None, "Matrix client not initialised"
+    if _matrix_client is None:
+        raise RuntimeError("Matrix client not initialised")
 
     try:
         if name == "get_recent_messages":
@@ -202,7 +203,8 @@ async def health():
 
 @app.get("/events")
 async def sse_endpoint():
-    assert _webhook_dispatcher is not None
+    if _webhook_dispatcher is None:
+        raise RuntimeError("Webhook dispatcher not initialised")
     q = _webhook_dispatcher.subscribe()
 
     async def event_generator():

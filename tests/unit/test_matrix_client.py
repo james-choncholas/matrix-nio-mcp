@@ -402,6 +402,21 @@ async def test_batch_index_embeds_bodies_only(client):
     client._embedding_client.embed_batch.assert_called_once_with(["first body", "second body"])
 
 
+async def test_batch_index_failure_adds_records_to_pending_index(client):
+    records = [
+        MessageRecord("$fail1:x", "!r:x", "@alice:x", "Alice", "msg1", 1000),
+        MessageRecord("$fail2:x", "!r:x", "@bob:x", "Bob", "msg2", 1001),
+    ]
+    client._embedding_client.embed_batch = AsyncMock(side_effect=RuntimeError("openai down"))
+    client._save_pending_index = MagicMock()
+
+    await client._batch_index(records)
+
+    assert "$fail1:x" in client._pending_index
+    assert "$fail2:x" in client._pending_index
+    client._save_pending_index.assert_called()
+
+
 # --- get_recent_messages ---
 
 def _add_records(client, records):

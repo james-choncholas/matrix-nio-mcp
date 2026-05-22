@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +11,7 @@ class Settings(BaseSettings):
     matrix_access_token: str
     matrix_user_id: str
     matrix_device_id: str  # required: E2EE store needs a stable device identity
-    matrix_store_path: str = "/tmp/nio_store"
+    matrix_store_path: str = str(Path.home() / ".cache" / "nio-mcp" / "store")
 
     # Qdrant
     qdrant_host: str = "localhost"

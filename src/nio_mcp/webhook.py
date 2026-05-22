@@ -58,7 +58,14 @@ class WebhookDispatcher:
             q.put_nowait(payload)
 
         if self._webhook_url:
-            await self._http_post(record, payload)
+            try:
+                await self._http_post(record, payload)
+            except Exception:
+                logger.warning(
+                    "Webhook POST failed for event %s; continuing",
+                    record.event_id,
+                    exc_info=True,
+                )
 
     async def _http_post(self, record: MessageRecord, payload: str) -> None:
         headers = {"Content-Type": "application/json"}

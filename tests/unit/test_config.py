@@ -29,8 +29,9 @@ def test_required_fields_raise_without_env(monkeypatch):
 
 
 def test_default_values(monkeypatch):
+    from pathlib import Path
     s = _make_settings(monkeypatch)
-    assert s.matrix_store_path == "/tmp/nio_store"
+    assert s.matrix_store_path == str(Path.home() / ".cache" / "nio-mcp" / "store")
     assert s.qdrant_host == "localhost"
     assert s.qdrant_port == 6333
     assert s.qdrant_collection == "matrix_messages"
