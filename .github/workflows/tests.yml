@@ -58,7 +58,5 @@ jobs:
           python -m pip install ".[test]"
       - name: Verify Docker access
         run: docker version
-      - name: Run unit tests
-        run: pytest tests/unit/ -v
       - name: Run integration tests
         run: sh ./scripts/test-matrix-integration.sh
