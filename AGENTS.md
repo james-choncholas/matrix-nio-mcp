@@ -369,6 +369,13 @@ A pre-built `.venv` is checked in at the repo root. Use it directly — no setup
 
 Do not invoke the integration tests with bare `pytest` unless you have manually reproduced what the script does. `scripts/test-matrix-integration.sh` is the supported entry point: it starts `docker-compose.integration.yml`, waits for Qdrant and Synapse, runs `pytest tests/integration -v "$@"`, and tears the stack down. Integration tests use a randomly-named Qdrant collection (per test session) and clean it up in a fixture finalizer.
 
+### CI and DinD compatibility
+
+The integration tests are designed to run in Docker-in-Docker (DinD) environments (like Gitea Actions / `act`). To ensure compatibility:
+- **Avoid bind-mounting local files** (scripts, configs) from the host into containers in `docker-compose.integration.yml`. In DinD, the Docker daemon and the test runner do not share a filesystem, so the daemon cannot find these files.
+- **Use custom Dockerfiles** and the `build` directive for services that need local files. This bundles the files into the image via the build context, which is sent over the network to the daemon.
+- `scripts/test-matrix-integration.sh` is responsible for calling `docker compose build` before starting the stack.
+
 ## Running locally
 
 To run the full local stack from `docker-compose.yml`:
