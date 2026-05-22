@@ -29,4 +29,12 @@ allow_public_rooms_over_federation: false
 EOF
 fi
 
+# Keep Synapse in the foreground so the container stays alive even if a
+# generated config defaults to daemon mode.
+if grep -q '^daemonize:' "${CONFIG_PATH}"; then
+  sed -i 's/^daemonize: .*/daemonize: false/' "${CONFIG_PATH}"
+else
+  printf '\ndaemonize: false\n' >> "${CONFIG_PATH}"
+fi
+
 exec python -m synapse.app.homeserver --config-path "${CONFIG_PATH}"

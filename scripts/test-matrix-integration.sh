@@ -29,7 +29,17 @@ run_pytest() {
 }
 
 cleanup() {
+  status=$?
+
+  if [ "${status}" -ne 0 ]; then
+    echo "Integration stack failed; dumping compose status and logs..." >&2
+    compose -f docker-compose.integration.yml ps -a || true
+    compose -f docker-compose.integration.yml logs --no-color || true
+  fi
+
   compose -f docker-compose.integration.yml down -v
+  trap - EXIT INT TERM
+  exit "${status}"
 }
 
 trap cleanup EXIT INT TERM
