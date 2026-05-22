@@ -1,0 +1,27 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_integration_data:/qdrant/storage
+
+  synapse:
+    image: ghcr.io/element-hq/synapse:latest
+    ports:
+      - "8008:8008"
+    volumes:
+      - synapse_integration_data:/data
+      - ./tests/integration/matrix/start-synapse.sh:/start-synapse.sh:ro
+    entrypoint: ["/bin/sh", "/start-synapse.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/_matrix/client/versions"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  qdrant_integration_data:
+  synapse_integration_data:

@@ -20,6 +20,7 @@ def make_record(i: int, room_id: str = "!room:x", sender: str = "@alice:x") -> M
         event_id=f"$event{i}:example.org",
         room_id=room_id,
         sender=sender,
+        sender_name=sender.split(":")[0].lstrip("@"),
         body=f"message number {i}",
         timestamp=1700000000000 + i * 1000,
     )

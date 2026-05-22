@@ -50,6 +50,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `BACKFILL_LIMIT` | no | `100` | Messages fetched per page per room during startup backfill |
 | `BACKFILL_PAGES_MAX` | no | `10` | Maximum backfill pages per room; `0` = full history |
 | `MESSAGE_BUFFER_SIZE` | no | `500` | In-memory ring buffer size for `get_recent_messages` |
+| `MATRIX_SYNC_TIMEOUT_MS` | no | `30000` | Matrix `/sync` long-poll timeout in milliseconds |
 | `SSE_QUEUE_MAXSIZE` | no | `100` | Per-subscriber SSE event queue cap (oldest dropped when full) |
 | `SSE_PORT` | no | `8000` | Port for the SSE and health HTTP endpoints |
 
@@ -229,12 +230,13 @@ pip install matrix-nio mcp qdrant-client openai fastapi "uvicorn[standard]" \
 pytest tests/unit/ -v
 ```
 
-Integration tests require a running Qdrant instance and are skipped automatically if it is not reachable:
+The full Docker-backed integration suite includes a real Matrix homeserver plus Qdrant:
 
 ```bash
-docker compose up qdrant -d
-pytest tests/integration/ -v
+scripts/test-matrix-integration.sh
 ```
+
+That script starts `docker-compose.integration.yml`, waits for Synapse and Qdrant, runs `pytest tests/integration -v`, and tears the stack down again.
 
 ### Project layout
 
@@ -250,7 +252,7 @@ src/nio_mcp/
 
 tests/
 ├── unit/             # All external I/O mocked
-└── integration/      # Real Qdrant required
+└── integration/      # Real Qdrant + optional real Matrix homeserver coverage
 ```
 
 ### Connecting to Claude Desktop

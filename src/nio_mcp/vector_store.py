@@ -103,13 +103,25 @@ class VectorStore:
         after_ts: Optional[int] = None,
         before_ts: Optional[int] = None,
     ) -> list[SearchResult]:
-        hits = await self._client.search(
-            collection_name=self._collection,
-            query_vector=vector,
-            limit=limit,
-            query_filter=self._build_filter(room_id, sender, after_ts, before_ts),
-            with_payload=True,
-        )
+        query_filter = self._build_filter(room_id, sender, after_ts, before_ts)
+        if hasattr(self._client, "search"):
+            hits = await self._client.search(
+                collection_name=self._collection,
+                query_vector=vector,
+                limit=limit,
+                query_filter=query_filter,
+                with_payload=True,
+            )
+        else:
+            response = await self._client.query_points(
+                collection_name=self._collection,
+                query=vector,
+                limit=limit,
+                query_filter=query_filter,
+                with_payload=True,
+                with_vectors=False,
+            )
+            hits = response.points
         results = []
         for hit in hits:
             p = hit.payload
