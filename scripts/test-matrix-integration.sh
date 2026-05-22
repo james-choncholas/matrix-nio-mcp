@@ -44,6 +44,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+compose -f docker-compose.integration.yml pull
 compose -f docker-compose.integration.yml up -d --wait
 
 run_pytest "$@"
