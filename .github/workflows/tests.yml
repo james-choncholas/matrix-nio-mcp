@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DEBIAN_FRONTEND: noninteractive
+      DOCKER_API_VERSION: 1.42
     steps:
       - name: Install system packages
         run: |
