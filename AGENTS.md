@@ -38,6 +38,28 @@ MatrixMCPClient
 
 `search_messages` is the one MCP tool that constructs its own `EmbeddingClient` and `VectorStore` per call rather than reusing the shared instances. This is intentional simplicity — searches are infrequent and the clients are stateless. When `query` is absent or whitespace-only, `EmbeddingClient` is not constructed at all and `VectorStore.scroll()` is called instead of `VectorStore.search()`; sender and time filters still apply through Qdrant payload filters.
 
+### Live message indexing flow
+
+For live traffic the path is:
+
+```
+sync_forever callback
+  → _on_message()
+  → append to in-memory buffer
+  → persist record to {MATRIX_STORE_PATH}/pending_index.json
+  → embed record.body
+  → upsert into Qdrant
+  → WebhookDispatcher.dispatch()
+  → remove record from pending_index.json
+```
+
+`pending_index.json` is a small crash-recovery journal for live events. If the process dies after buffering a message but before indexing completes, startup reloads and retries those records idempotently.
+
+### Key data shapes
+
+- `MessageRecord` — canonical message shape used for the in-memory buffer, `pending_index.json`, webhook payloads, and Qdrant payloads. Fields: `event_id`, `room_id`, `sender`, `sender_name`, `body`, `timestamp` (Unix ms).
+- `SearchResult` — same fields as `MessageRecord` plus `score` for semantic-search similarity.
+
 ---
 
 ## matrix-nio API used in this project
@@ -206,14 +228,17 @@ Understanding this sequence is critical for any change to `matrix_client.py:star
        ↓ reads {MATRIX_STORE_PATH}/buffer.json (written by stop()) to pre-populate
          _buffer and _seen_event_ids; FileNotFoundError silently ignored (first boot
          after this feature, or file manually deleted)
-4. client.add_event_callback(_on_message, RoomMessageText)
-5. asyncio.create_task(client.sync_forever(since=loaded_sync_token, ...))
+4. _load_pending_index() + _retry_pending_index()
+       ↓ replays any live messages that were journaled to
+         {MATRIX_STORE_PATH}/pending_index.json before a prior crash
+5. client.add_event_callback(_on_message, RoomMessageText)
+6. asyncio.create_task(client.sync_forever(since=loaded_sync_token, ...))
        ↓ Matrix server delivers all events missed during downtime from that token forward
          _seen_event_ids prevents double-insertion if any replayed events were already
-         in the loaded buffer
+         in the loaded buffer or pending-index journal
 ```
 
-No Matrix backfill is needed — `sync_forever` catches up on missed events, and the buffer file provides immediate history for `get_recent_messages()`. If the token is too old and the server has expired it, the sync will fail (not currently handled; treat as a fresh-start edge case).
+No Matrix backfill is needed — `sync_forever` catches up on missed events, the buffer file provides immediate history for `get_recent_messages()`, and `pending_index.json` replays any live writes that crashed mid-index. If the token is too old and the server has expired it, the sync will fail (not currently handled; treat as a fresh-start edge case).
 
 ### Retry path (stored token present, bootstrap incomplete)
 
@@ -234,8 +259,11 @@ This is the failure-recovery path for "first sync succeeded, process died before
 6. _index_initial_sync(initial_sync)
 7. _mark_backfill_complete()
        ↓ writes {MATRIX_STORE_PATH}/backfill_complete only after both phases finish
-8. client.add_event_callback(_on_message, RoomMessageText)
-9. asyncio.create_task(client.sync_forever(since=initial_sync.next_batch, ...))
+8. _load_pending_index() + _retry_pending_index()
+       ↓ replays any messages left in {MATRIX_STORE_PATH}/pending_index.json
+         from a prior interrupted live-sync phase
+9. client.add_event_callback(_on_message, RoomMessageText)
+10. asyncio.create_task(client.sync_forever(since=initial_sync.next_batch, ...))
 ```
 
 This retry path guarantees the process will not permanently skip bootstrap just because nio persisted `next_batch` before local indexing finished. A moved retry anchor may consume part of a bounded backfill budget; that is intentional and controlled by `BACKFILL_PAGES_MAX`.
@@ -262,13 +290,16 @@ This retry path guarantees the process will not permanently skip bootstrap just 
           never replays; without this step those messages are silently dropped
 6. _mark_backfill_complete()
        ↓ writes {MATRIX_STORE_PATH}/backfill_complete only after bootstrap finishes
-7. client.add_event_callback(_on_message, RoomMessageText)
+7. _load_pending_index() + _retry_pending_index()
+       ↓ usually a no-op on true first boot, but safe if a prior run crashed after
+         live messages had been journaled to {MATRIX_STORE_PATH}/pending_index.json
+8. client.add_event_callback(_on_message, RoomMessageText)
        ↓ registered AFTER backfill + initial-sync indexing to avoid double-indexing
-8. asyncio.create_task(client.sync_forever(since=initial_sync.next_batch, ...))
+9. asyncio.create_task(client.sync_forever(since=initial_sync.next_batch, ...))
        ↓ live sync starts from the exact token captured before backfill
 ```
 
-Steps 5, 5.5, and 8 together cover the full timeline without gaps or overlaps: backfill covers everything before `prev_batch`, `_index_initial_sync` covers `prev_batch`→`next_batch`, and `sync_forever` covers everything after `next_batch`. `_seen_event_ids` provides a secondary duplicate guard across all three phases. The sentinel write between bootstrap and live sync is the durable "commit point" that distinguishes a complete bootstrap from one that must be retried.
+Steps 5, 5.5, and 9 together cover the full timeline without gaps or overlaps: backfill covers everything before `prev_batch`, `_index_initial_sync` covers `prev_batch`→`next_batch`, and `sync_forever` covers everything after `next_batch`. `_seen_event_ids` provides a secondary duplicate guard across all three phases. The sentinel write between bootstrap and live sync is the durable "commit point" that distinguishes a complete bootstrap from one that must be retried.
 
 ---
 
@@ -324,6 +355,9 @@ A pre-built `.venv` is checked in at the repo root. Use it directly — no setup
 # Unit tests — no external services
 .venv/bin/pytest tests/unit/ -v
 
+# Single unit test file
+.venv/bin/pytest tests/unit/test_vector_store.py -v
+
 # Integration tests — always use the script; it starts Synapse + Qdrant first
 ./scripts/test-matrix-integration.sh
 
@@ -335,6 +369,14 @@ A pre-built `.venv` is checked in at the repo root. Use it directly — no setup
 
 Do not invoke the integration tests with bare `pytest` unless you have manually reproduced what the script does. `scripts/test-matrix-integration.sh` is the supported entry point: it starts `docker-compose.integration.yml`, waits for Qdrant and Synapse, runs `pytest tests/integration -v "$@"`, and tears the stack down. Integration tests use a randomly-named Qdrant collection (per test session) and clean it up in a fixture finalizer.
 
+## Running locally
+
+To run the full local stack from `docker-compose.yml`:
+
+```bash
+docker compose up --build
+```
+
 ---
 
 ## Key configuration defaults
@@ -345,7 +387,7 @@ Do not invoke the integration tests with bare `pytest` unless you have manually 
 | `BACKFILL_LIMIT` | `100` | Messages per `room_messages()` call |
 | `MESSAGE_BUFFER_SIZE` | `500` | `deque(maxlen=...)` — oldest entries dropped automatically |
 | `SSE_QUEUE_MAXSIZE` | `100` | Per subscriber; drop-oldest on full |
-| `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production. Also stores `buffer.json` (restart warm-start cache) and `backfill_complete` (bootstrap sentinel) |
+| `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production. Also stores `buffer.json` (restart warm-start cache), `pending_index.json` (live-message retry journal), and `backfill_complete` (bootstrap sentinel) |
 
 ---
 
