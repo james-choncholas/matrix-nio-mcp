@@ -261,9 +261,13 @@ class MatrixMCPClient:
 
     def _save_buffer(self) -> None:
         path = os.path.join(self._config.matrix_store_path, "buffer.json")
+        tmp = path + ".tmp"
         try:
-            with open(path, "w") as f:
+            with open(tmp, "w") as f:
                 json.dump([r.to_dict() for r in self._buffer], f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
         except Exception:
             logger.exception("Failed to save message buffer to %s", path)
 
