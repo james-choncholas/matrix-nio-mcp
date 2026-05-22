@@ -2,6 +2,7 @@
 set -eu
 
 CONFIG_PATH="/data/homeserver.yaml"
+LOG_PATH="/homeserver.log"
 
 if [ ! -f "${CONFIG_PATH}" ]; then
   python -m synapse.app.homeserver \
@@ -36,5 +37,10 @@ if grep -q '^daemonize:' "${CONFIG_PATH}"; then
 else
   printf '\ndaemonize: false\n' >> "${CONFIG_PATH}"
 fi
+
+# Synapse's generated log config writes to /homeserver.log. Point that file at
+# the container log stream so compose logs capture startup and runtime output.
+rm -f "${LOG_PATH}"
+ln -s /proc/1/fd/1 "${LOG_PATH}"
 
 exec python -m synapse.app.homeserver --config-path "${CONFIG_PATH}"
