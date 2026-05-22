@@ -122,17 +122,26 @@ class MatrixMCPClient:
             )
 
     async def stop(self) -> None:
+        # Ask sync_forever to exit after the current iteration so _handle_sync
+        # (token advance + callbacks) runs to completion before we snapshot state.
+        # Hard-cancel only if the graceful exit hasn't happened within the poll
+        # window; asyncio.shield keeps the task alive if wait_for times out first.
+        if self._client:
+            self._client.stop_sync_forever()
+        if self._sync_task:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._sync_task), timeout=35.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._sync_task.cancel()
+                try:
+                    await self._sync_task
+                except asyncio.CancelledError:
+                    pass
         self._save_buffer()
         try:
             self._save_pending_index()
         except Exception:
             logger.exception("Failed to flush pending index on shutdown; unindexed events may be lost")
-        if self._sync_task:
-            self._sync_task.cancel()
-            try:
-                await self._sync_task
-            except asyncio.CancelledError:
-                pass
         if self._client:
             await self._client.close()
 

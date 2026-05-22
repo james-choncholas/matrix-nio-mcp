@@ -233,9 +233,14 @@ async def _run() -> None:
     )
     uvicorn_server = uvicorn.Server(uvicorn_config)
 
-    async with anyio.create_task_group() as tg:
-        tg.start_soon(_run_mcp)
-        tg.start_soon(uvicorn_server.serve)
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_run_mcp)
+            tg.start_soon(uvicorn_server.serve)
+    finally:
+        await matrix_client.stop()
+        await vector_store.close()
+        await webhook_dispatcher.close()
 
 
 async def _run_mcp() -> None:
