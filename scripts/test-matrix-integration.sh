@@ -10,14 +10,6 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-docker compose -f docker-compose.integration.yml up -d
-
-until curl -fsS http://localhost:6333/collections >/dev/null; do
-  sleep 1
-done
-
-until curl -fsS http://localhost:8008/_matrix/client/versions >/dev/null; do
-  sleep 1
-done
+docker compose -f docker-compose.integration.yml up -d --wait
 
 .venv/bin/pytest tests/integration -v "$@"

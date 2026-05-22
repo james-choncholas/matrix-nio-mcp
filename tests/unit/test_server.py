@@ -88,7 +88,9 @@ async def test_search_messages_embeds_and_searches(mock_embedding_and_store):
     emb, vs = mock_embedding_and_store
     data = await _call("search_messages", {"query": "project meeting", "limit": 5})
     emb.embed.assert_called_once_with("project meeting")
-    vs.search.assert_called_once()
+    _, kwargs = vs.search.call_args
+    assert kwargs["limit"] == 5
+    assert kwargs["sender_query"] is None
     assert isinstance(data, list)
     assert data[0]["score"] == 0.99
 
@@ -101,11 +103,28 @@ async def test_search_messages_passes_timestamp_filters_to_search(mock_embedding
     assert kwargs["before_ts"] == 2000
 
 
+async def test_search_messages_passes_sender_query_to_search(mock_embedding_and_store):
+    emb, vs = mock_embedding_and_store
+    await _call("search_messages", {"query": "hello", "sender": "Fred Flintstone"})
+    emb.embed.assert_called_once_with("hello")
+    _, kwargs = vs.search.call_args
+    assert kwargs["sender_query"] == "Fred Flintstone"
+
+
 async def test_search_messages_time_only_uses_scroll(mock_embedding_and_store):
     emb, vs = mock_embedding_and_store
     data = await _call("search_messages", {"after_ts": 1700000000000, "before_ts": 1700000002000})
     emb.embed.assert_not_called()
     vs.scroll.assert_called_once()
+    assert isinstance(data, list)
+
+
+async def test_search_messages_sender_only_uses_scroll(mock_embedding_and_store):
+    emb, vs = mock_embedding_and_store
+    data = await _call("search_messages", {"sender": "fred"})
+    emb.embed.assert_not_called()
+    _, kwargs = vs.scroll.call_args
+    assert kwargs["sender_query"] == "fred"
     assert isinstance(data, list)
 
 

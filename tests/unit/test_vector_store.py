@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from nio_mcp.vector_store import VectorStore, _event_id_to_uuid
+from nio_mcp.vector_store import VectorStore, _event_id_to_uuid, _sender_search_text
 from nio_mcp.models import MessageRecord, SearchResult
 
 
@@ -40,13 +40,20 @@ def test_event_id_to_uuid_differs_for_different_ids():
     assert a != b
 
 
+def test_sender_search_text_includes_name_sender_and_localpart():
+    sender_search = _sender_search_text("@fred.flintstone:example.org", "Fred Flintstone")
+    assert "Fred Flintstone" in sender_search
+    assert "@fred.flintstone:example.org" in sender_search
+    assert "fred.flintstone" in sender_search
+
+
 async def test_init_collection_creates_when_absent(store, mock_qdrant):
     existing = MagicMock()
     existing.collections = []
     mock_qdrant.get_collections.return_value = existing
     await store.init_collection()
     mock_qdrant.create_collection.assert_called_once()
-    mock_qdrant.create_payload_index.assert_called_once()
+    assert mock_qdrant.create_payload_index.call_count == 2
     call_kwargs = mock_qdrant.create_collection.call_args.kwargs
     assert call_kwargs["collection_name"] == "test_col"
 
@@ -59,7 +66,7 @@ async def test_init_collection_skips_when_present(store, mock_qdrant):
     mock_qdrant.get_collections.return_value = existing
     await store.init_collection()
     mock_qdrant.create_collection.assert_not_called()
-    mock_qdrant.create_payload_index.assert_called_once()
+    assert mock_qdrant.create_payload_index.call_count == 2
 
 
 async def test_init_collection_creates_timestamp_index(store, mock_qdrant):
@@ -67,12 +74,31 @@ async def test_init_collection_creates_timestamp_index(store, mock_qdrant):
     existing.collections = []
     mock_qdrant.get_collections.return_value = existing
     await store.init_collection()
-    call_kwargs = mock_qdrant.create_payload_index.call_args.kwargs
+    call_kwargs = next(
+        call.kwargs
+        for call in mock_qdrant.create_payload_index.call_args_list
+        if call.kwargs["field_name"] == "timestamp"
+    )
     assert call_kwargs["collection_name"] == "test_col"
-    assert call_kwargs["field_name"] == "timestamp"
     schema = call_kwargs["field_schema"]
     assert schema.type == "integer"
     assert schema.is_principal is True
+
+
+async def test_init_collection_creates_sender_search_index(store, mock_qdrant):
+    existing = MagicMock()
+    existing.collections = []
+    mock_qdrant.get_collections.return_value = existing
+    await store.init_collection()
+    call_kwargs = next(
+        call.kwargs
+        for call in mock_qdrant.create_payload_index.call_args_list
+        if call.kwargs["field_name"] == "sender_search"
+    )
+    schema = call_kwargs["field_schema"]
+    assert schema.type == "text"
+    assert schema.tokenizer == "word"
+    assert schema.lowercase is True
 
 
 async def test_upsert_builds_correct_payload(store, mock_qdrant):
@@ -86,6 +112,8 @@ async def test_upsert_builds_correct_payload(store, mock_qdrant):
     assert point.payload["event_id"] == RECORD.event_id
     assert point.payload["room_id"] == RECORD.room_id
     assert point.payload["sender"] == RECORD.sender
+    assert point.payload["sender_name"] == RECORD.sender_name
+    assert point.payload["sender_search"] == "Alice @alice:example.org"
     assert point.payload["body"] == RECORD.body
     assert point.payload["timestamp"] == RECORD.timestamp
     assert point.vector == VECTOR
@@ -142,6 +170,29 @@ async def test_search_with_timestamp_filter_passes_range(store, mock_qdrant):
     assert ts_conditions[0].range.lte == 2000
 
 
+async def test_search_with_sender_query_uses_sender_search_filter(store, mock_qdrant):
+    mock_qdrant.search.return_value = []
+    await store.search(VECTOR, sender_query="fred")
+    call_kwargs = mock_qdrant.search.call_args.kwargs
+    f = call_kwargs["query_filter"]
+    assert f.min_should is not None
+    assert f.min_should.min_count == 1
+    assert f.min_should.conditions[0].key == "sender_search"
+    assert f.min_should.conditions[0].match.text == "fred"
+
+
+async def test_search_with_multi_token_sender_query_falls_back_to_broader_match(
+    store, mock_qdrant
+):
+    mock_qdrant.search.side_effect = [[], []]
+    await store.search(VECTOR, sender_query="Fred Flintstone")
+    assert mock_qdrant.search.call_count == 2
+    strict_filter = mock_qdrant.search.call_args_list[0].kwargs["query_filter"]
+    fallback_filter = mock_qdrant.search.call_args_list[1].kwargs["query_filter"]
+    assert strict_filter.min_should.min_count == 2
+    assert fallback_filter.min_should.min_count == 1
+
+
 async def test_scroll_returns_search_results_with_zero_score(store, mock_qdrant):
     point = MagicMock()
     point.payload = {
@@ -177,6 +228,16 @@ async def test_scroll_with_timestamp_filter_passes_range(store, mock_qdrant):
     ts_conditions = [c for c in f.must if c.key == "timestamp"]
     assert ts_conditions[0].range.gte == 1000
     assert ts_conditions[0].range.lte == 2000
+
+
+async def test_scroll_with_sender_query_uses_sender_search_filter(store, mock_qdrant):
+    mock_qdrant.scroll.return_value = ([], None)
+    await store.scroll(sender_query="fred")
+    call_kwargs = mock_qdrant.scroll.call_args.kwargs
+    f = call_kwargs["scroll_filter"]
+    assert f.min_should is not None
+    assert f.min_should.min_count == 1
+    assert f.min_should.conditions[0].key == "sender_search"
 
 
 async def test_close_calls_client_close(store, mock_qdrant):

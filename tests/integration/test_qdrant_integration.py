@@ -149,3 +149,75 @@ async def test_search_returns_correct_metadata(store):
     assert found.timestamp == record.timestamp
     assert isinstance(found.score, float)
     assert 0.0 <= found.score <= 1.0
+
+
+@skip_if_no_qdrant
+async def test_search_with_sender_query_matches_alias_variants(store):
+    shared_sender = "@fred:x"
+    r1 = MessageRecord(
+        event_id="$event_alias_1:example.org",
+        room_id="!room:x",
+        sender=shared_sender,
+        sender_name="Fred Flintstone",
+        body="meeting notes",
+        timestamp=1700000010000,
+    )
+    r2 = MessageRecord(
+        event_id="$event_alias_2:example.org",
+        room_id="!room:x",
+        sender=shared_sender,
+        sender_name="fred",
+        body="follow up",
+        timestamp=1700000011000,
+    )
+    r3 = MessageRecord(
+        event_id="$event_alias_3:example.org",
+        room_id="!room:x",
+        sender="@barney:x",
+        sender_name="Barney Rubble",
+        body="different sender",
+        timestamp=1700000012000,
+    )
+    vec = make_vector(0.5)
+    await store.upsert(r1, vec)
+    await store.upsert(r2, vec)
+    await store.upsert(r3, vec)
+
+    import asyncio
+    await asyncio.sleep(0.5)
+
+    results = await store.search(vec, limit=10, sender_query="Fred Flintstone")
+    event_ids = {result.event_id for result in results}
+    assert r1.event_id in event_ids
+    assert r2.event_id in event_ids
+    assert r3.event_id not in event_ids
+
+
+@skip_if_no_qdrant
+async def test_scroll_with_sender_query_returns_matching_sender(store):
+    r1 = MessageRecord(
+        event_id="$event_scroll_1:example.org",
+        room_id="!room:x",
+        sender="@fred:x",
+        sender_name="Fred Flintstone",
+        body="latest message",
+        timestamp=1700000020000,
+    )
+    r2 = MessageRecord(
+        event_id="$event_scroll_2:example.org",
+        room_id="!room:x",
+        sender="@barney:x",
+        sender_name="Barney Rubble",
+        body="other sender",
+        timestamp=1700000021000,
+    )
+    vec = make_vector(0.5)
+    await store.upsert(r1, vec)
+    await store.upsert(r2, vec)
+
+    import asyncio
+    await asyncio.sleep(0.5)
+
+    results = await store.scroll(limit=10, sender_query="fred")
+    assert len(results) >= 1
+    assert all(result.sender == "@fred:x" for result in results)

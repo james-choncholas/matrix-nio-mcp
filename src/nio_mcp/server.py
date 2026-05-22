@@ -57,15 +57,20 @@ async def list_tools() -> list[types.Tool]:
             name="search_messages",
             description=(
                 "Search indexed Matrix messages. Provide a natural-language query for semantic "
-                "similarity search, after_ts/before_ts (Unix ms) to filter by time, or both. "
-                "If only time filters are given, returns up to limit messages in reverse "
-                "chronological order by timestamp (no similarity score). At least one of "
-                "query, after_ts, or before_ts must be provided."
+                "similarity search, a sender name or MXID to narrow results, after_ts/before_ts "
+                "(Unix ms) to filter by time, or any combination of those. If no query is "
+                "provided, returns up to limit messages in reverse chronological order by "
+                "timestamp (no similarity score). At least one of query, sender, after_ts, or "
+                "before_ts must be provided."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural-language search query"},
+                    "sender": {
+                        "type": "string",
+                        "description": "Sender name or MXID; matched flexibly",
+                    },
                     "limit": {"type": "integer", "default": 10, "description": "Max results"},
                     "after_ts": {"type": "integer", "description": "Only return messages after this timestamp (Unix milliseconds)"},
                     "before_ts": {"type": "integer", "description": "Only return messages before this timestamp (Unix milliseconds)"},
@@ -123,12 +128,13 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
         if name == "search_messages":
             query = arguments.get("query", "").strip()
+            sender = arguments.get("sender", "").strip()
             limit = arguments.get("limit", 10)
             after_ts = arguments.get("after_ts")
             before_ts = arguments.get("before_ts")
 
-            if not query and after_ts is None and before_ts is None:
-                return [types.TextContent(type="text", text=json.dumps({"error": "Provide at least one of: query, after_ts, before_ts"}))]
+            if not query and not sender and after_ts is None and before_ts is None:
+                return [types.TextContent(type="text", text=json.dumps({"error": "Provide at least one of: query, sender, after_ts, before_ts"}))]
 
             settings = get_settings()
             vector_store = VectorStore(
@@ -140,9 +146,20 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             if query:
                 embedding_client = EmbeddingClient(api_key=settings.openai_api_key)
                 vector = await embedding_client.embed(query)
-                results = await vector_store.search(vector, limit=limit, after_ts=after_ts, before_ts=before_ts)
+                results = await vector_store.search(
+                    vector,
+                    limit=limit,
+                    sender_query=sender or None,
+                    after_ts=after_ts,
+                    before_ts=before_ts,
+                )
             else:
-                results = await vector_store.scroll(limit=limit, after_ts=after_ts, before_ts=before_ts)
+                results = await vector_store.scroll(
+                    limit=limit,
+                    sender_query=sender or None,
+                    after_ts=after_ts,
+                    before_ts=before_ts,
+                )
 
             return [types.TextContent(type="text", text=json.dumps([r.to_dict() for r in results]))]
 

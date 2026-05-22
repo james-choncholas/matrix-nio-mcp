@@ -5,7 +5,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for [Matrix](
 ## Features
 
 - **`get_recent_messages`** — fetch the most recent messages across all joined rooms, with optional filtering by sender or room
-- **`search_messages`** — search indexed message history by semantic similarity, time range, or both
+- **`search_messages`** — search indexed message history by semantic similarity, sender, time range, or any combination
 - **`get_message_context`** — retrieve messages surrounding a specific event (useful after a search hit)
 - **`send_message`** — send a text message to any joined room
 - **Webhooks** — POST to a configurable URL and/or stream events via SSE whenever a new message arrives
@@ -101,11 +101,12 @@ Returns the `k` most recent messages from the in-memory buffer (populated by bac
 
 ### `search_messages`
 
-Search indexed messages by semantic similarity, time range, or both. At least one of `query`, `after_ts`, or `before_ts` must be provided.
+Search indexed messages by semantic similarity, sender, time range, or any combination of those. At least one of `query`, `sender`, `after_ts`, or `before_ts` must be provided.
 
 ```json
 {
   "query": "project standup notes",
+  "sender": "fred",
   "limit": 10,
   "after_ts": 1700000000000,
   "before_ts": 1700086400000
@@ -113,8 +114,9 @@ Search indexed messages by semantic similarity, time range, or both. At least on
 ```
 
 - **`query`** — natural-language search; embedded with OpenAI and matched by cosine similarity against Qdrant.
+- **`sender`** — sender name or MXID. Matching is flexible, so short names like `fred` can still match messages stored with fuller display names.
 - **`after_ts` / `before_ts`** — Unix millisecond timestamps (optional). Filter results to a time window.
-- If only `after_ts`/`before_ts` are given (no `query`), up to `limit` messages in that window are returned newest-first by timestamp with `score: 0`.
+- If `query` is omitted, up to `limit` matching messages are returned newest-first by timestamp with `score: 0`.
 
 Returns the same message fields as `get_recent_messages` plus a `score` (cosine similarity, 0–1, or 0 for time-only queries). Use the returned `event_id` and `room_id` with `get_message_context` to retrieve surrounding messages.
 
@@ -230,13 +232,16 @@ pip install matrix-nio mcp qdrant-client openai fastapi "uvicorn[standard]" \
 pytest tests/unit/ -v
 ```
 
-The full Docker-backed integration suite includes a real Matrix homeserver plus Qdrant:
+Integration tests must be run through the helper script, because it brings up the Docker-backed Matrix homeserver and Qdrant before invoking pytest:
 
 ```bash
 scripts/test-matrix-integration.sh
+
+# Still use the script entry point even when focusing on one integration file
+scripts/test-matrix-integration.sh tests/integration/test_qdrant_integration.py
 ```
 
-That script starts `docker-compose.integration.yml`, waits for Synapse and Qdrant, runs `pytest tests/integration -v`, and tears the stack down again.
+Do not invoke the integration tests with bare `pytest` unless you have already recreated that environment yourself. The script is the supported entry point; it starts `docker-compose.integration.yml`, waits for Synapse and Qdrant, runs `pytest tests/integration -v "$@"`, and tears the stack down again.
 
 ### Project layout
 

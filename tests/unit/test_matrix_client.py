@@ -379,6 +379,29 @@ async def test_on_message_defers_indexing_when_pre_save_fails(client):
     assert event.event_id in client._pending_index
 
 
+async def test_index_message_embeds_body_only(client):
+    record = MessageRecord("$body:x", "!r:x", "@alice:x", "Alice", "hello world", 1000)
+    client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+
+    await client._index_message(record)
+
+    client._embedding_client.embed.assert_called_once_with("hello world")
+
+
+async def test_batch_index_embeds_bodies_only(client):
+    records = [
+        MessageRecord("$1:x", "!r:x", "@alice:x", "Alice", "first body", 1000),
+        MessageRecord("$2:x", "!r:x", "@bob:x", "Bob", "second body", 1001),
+    ]
+    client._embedding_client.embed_batch = AsyncMock(
+        return_value=[[0.1] * 1536, [0.2] * 1536]
+    )
+
+    await client._batch_index(records)
+
+    client._embedding_client.embed_batch.assert_called_once_with(["first body", "second body"])
+
+
 # --- get_recent_messages ---
 
 def _add_records(client, records):

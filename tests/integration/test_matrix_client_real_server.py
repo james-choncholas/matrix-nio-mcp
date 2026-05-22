@@ -202,7 +202,7 @@ async def test_pending_index_replays_after_restart(
 
     vector_store = await make_vector_store()
     config = make_matrix_config(bot, store_name="pending_index_store")
-    failing_text = "Alice: pending retry message"
+    failing_text = "pending retry message"
 
     client_one, _embedder_one, dispatcher_one = make_matrix_client(
         config,

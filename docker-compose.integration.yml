@@ -6,6 +6,12 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_integration_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/6333"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
 
   synapse:
     image: ghcr.io/element-hq/synapse:latest

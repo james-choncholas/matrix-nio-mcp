@@ -36,7 +36,7 @@ MatrixMCPClient
   └── WebhookDispatcher  (dispatch() called on each indexed live message)
 ```
 
-`search_messages` is the one MCP tool that constructs its own `EmbeddingClient` and `VectorStore` per call rather than reusing the shared instances. This is intentional simplicity — searches are infrequent and the clients are stateless. When `query` is absent or whitespace-only, `EmbeddingClient` is not constructed at all and `VectorStore.scroll()` is called instead of `VectorStore.search()`.
+`search_messages` is the one MCP tool that constructs its own `EmbeddingClient` and `VectorStore` per call rather than reusing the shared instances. This is intentional simplicity — searches are infrequent and the clients are stateless. When `query` is absent or whitespace-only, `EmbeddingClient` is not constructed at all and `VectorStore.scroll()` is called instead of `VectorStore.search()`; sender and time filters still apply through Qdrant payload filters.
 
 ---
 
@@ -110,7 +110,7 @@ Registers an async callback invoked for each timeline event matching the filter 
 async def callback(room: MatrixRoom, event: RoomMessageText) -> None
 ```
 
-`room.room_id` gives the room ID. `event.event_id`, `event.sender`, `event.body`, `event.server_timestamp` are the fields used here. `room.users` is a `dict[str, RoomMember]` keyed by Matrix ID; `RoomMember.display_name` gives the human-readable name used when constructing the embedding text.
+`room.room_id` gives the room ID. `event.event_id`, `event.sender`, `event.body`, `event.server_timestamp` are the fields used here. `room.users` is a `dict[str, RoomMember]` keyed by Matrix ID; `RoomMember.display_name` gives the human-readable name used when constructing `sender_name` metadata.
 
 ### `room_messages()` — paginated history
 
@@ -292,17 +292,17 @@ Collection name: `QDRANT_COLLECTION` (default `matrix_messages`).
 | Distance | Cosine |
 | Point ID | UUID derived from SHA-256 of `event_id` (first 16 bytes → UUID) — deterministic, so upserting the same event twice is idempotent |
 
-Payload stored per point: `event_id`, `room_id`, `sender` (Matrix ID), `sender_name` (display name), `body`, `timestamp`.
+Payload stored per point: `event_id`, `room_id`, `sender` (Matrix ID), `sender_name` (display name), `sender_search` (flexible sender lookup text), `body`, `timestamp`.
 
-The text passed to the embedding model is `"{sender_name}: {body}"` — sender name is baked into the vector so searches like "what did Alice say about X" surface results by author naturally. `sender` (the raw Matrix ID) is kept separately for filtered queries. Old records indexed before `sender_name` was added fall back to `sender` when read back.
+The text passed to the embedding model is `body` only. `sender_search` stores display name, MXID, and localpart-derived aliases so `search_messages(sender=...)` can do flexible payload-text matching without polluting the semantic vector. `sender` (the raw Matrix ID) is kept separately for exact filters. Old records indexed before `sender_name` was added fall back to `sender` when read back.
 
 `init_collection()` is idempotent — checks existing collections before creating. Called once at startup before `matrix_client.start()`.
 
 ### `VectorStore` search vs scroll
 
-`search(vector, ...)` — cosine similarity search via Qdrant's `/search` endpoint. Accepts optional `after_ts` / `before_ts` (Unix ms) which become a `Range` filter on the `timestamp` payload field, combined with any `room_id` / `sender` filters via `_build_filter()`.
+`search(vector, ...)` — cosine similarity search via Qdrant's `/search` endpoint. Accepts optional `after_ts` / `before_ts` (Unix ms) which become a `Range` filter on the `timestamp` payload field, combined with any `room_id` / `sender` exact filters and `sender_query` flexible full-text sender matching via `_build_filter()`.
 
-`scroll(...)` — no query vector; uses Qdrant's `/scroll` endpoint. Called by `search_messages` when `query` is absent or whitespace-only. Returns `SearchResult` with `score=0.0`. Accepts the same filter params. Qdrant `scroll` returns points in internal storage order (not by timestamp), so results are not chronologically sorted.
+`scroll(...)` — no query vector; uses Qdrant's `/scroll` endpoint. Called by `search_messages` when `query` is absent or whitespace-only. Returns `SearchResult` with `score=0.0`. Accepts the same filter params and orders results by `timestamp` descending.
 
 ---
 
@@ -324,14 +324,16 @@ A pre-built `.venv` is checked in at the repo root. Use it directly — no setup
 # Unit tests — no external services
 .venv/bin/pytest tests/unit/ -v
 
-# Integration tests — Qdrant must be running
-docker compose up qdrant -d
-pytest tests/integration/ -v
+# Integration tests — always use the script; it starts Synapse + Qdrant first
+./scripts/test-matrix-integration.sh
+
+# Even when focusing on one file, still use the script entry point
+./scripts/test-matrix-integration.sh tests/integration/test_qdrant_integration.py
 ```
 
 `conftest.py` at the project root adds `src/` to `sys.path`, so no `PYTHONPATH` export or editable install is needed to run tests.
 
-Integration tests use a randomly-named Qdrant collection (per test session) and clean it up in a fixture finalizer. They are skipped automatically if Qdrant is not reachable on `QDRANT_HOST:QDRANT_PORT`.
+Do not invoke the integration tests with bare `pytest` unless you have manually reproduced what the script does. `scripts/test-matrix-integration.sh` is the supported entry point: it starts `docker-compose.integration.yml`, waits for Qdrant and Synapse, runs `pytest tests/integration -v "$@"`, and tears the stack down. Integration tests use a randomly-named Qdrant collection (per test session) and clean it up in a fixture finalizer.
 
 ---
 

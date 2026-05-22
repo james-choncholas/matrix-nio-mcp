@@ -471,7 +471,7 @@ class MatrixMCPClient:
             )
 
     async def _index_message(self, record: MessageRecord) -> None:
-        vector = await self._embedding_client.embed(f"{record.sender_name}: {record.body}")
+        vector = await self._embedding_client.embed(record.body)
         await self._vector_store.upsert(record, vector)
         await self._webhook_dispatcher.dispatch(record)
 
@@ -479,7 +479,7 @@ class MatrixMCPClient:
         if not records:
             return
         try:
-            texts = [f"{r.sender_name}: {r.body}" for r in records]
+            texts = [r.body for r in records]
             vectors = await self._embedding_client.embed_batch(texts)
             for record, vector in zip(records, vectors):
                 await self._vector_store.upsert(record, vector)
