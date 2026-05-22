@@ -2,6 +2,7 @@
 set -eu
 
 CONFIG_PATH="/data/homeserver.yaml"
+
 if [ ! -f "${CONFIG_PATH}" ]; then
   python -m synapse.app.homeserver \
     --server-name localhost \
@@ -9,40 +10,47 @@ if [ ! -f "${CONFIG_PATH}" ]; then
     --generate-config \
     --report-stats=no
 
-  sed -i '/^  - bind_addresses:/,/^    port: 8008$/c\
-  - bind_addresses:\
-    - 0.0.0.0\
-    port: 8008' "${CONFIG_PATH}"
+  python3 - <<'PYEOF'
+import yaml
 
-  if grep -q '^enable_registration:' "${CONFIG_PATH}"; then
-    sed -i 's/^enable_registration: false$/enable_registration: true/' "${CONFIG_PATH}"
-  else
-    printf '\nenable_registration: true\n' >> "${CONFIG_PATH}"
-  fi
+with open("/data/homeserver.yaml") as f:
+    cfg = yaml.safe_load(f)
 
-  cat >> "${CONFIG_PATH}" <<'EOF'
-enable_registration_without_verification: true
-suppress_key_server_warning: true
-allow_public_rooms_without_auth: true
-allow_public_rooms_over_federation: false
-EOF
+for listener in cfg.get("listeners", []):
+    if listener.get("port") == 8008:
+        listener["bind_addresses"] = ["0.0.0.0"]
+
+cfg["enable_registration"] = True
+cfg["enable_registration_without_verification"] = True
+cfg["suppress_key_server_warning"] = True
+cfg["allow_public_rooms_without_auth"] = True
+cfg["allow_public_rooms_over_federation"] = False
+
+with open("/data/homeserver.yaml", "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+PYEOF
 fi
 
 # Keep Synapse in the foreground so the container stays alive even if a
 # generated config defaults to daemon mode.
-if grep -q '^daemonize:' "${CONFIG_PATH}"; then
-  sed -i 's/^daemonize: .*/daemonize: false/' "${CONFIG_PATH}"
-else
-  printf '\ndaemonize: false\n' >> "${CONFIG_PATH}"
-fi
+python3 - <<'PYEOF'
+import yaml
 
-LOG_CONFIG_PATH="$(awk -F': ' '/^log_config:/ {gsub(/"/, "", $2); print $2; exit}' "${CONFIG_PATH}")"
-if [ -z "${LOG_CONFIG_PATH}" ]; then
-  LOG_CONFIG_PATH="/data/localhost.log.config"
-fi
+with open("/data/homeserver.yaml") as f:
+    cfg = yaml.safe_load(f)
+cfg["daemonize"] = False
+with open("/data/homeserver.yaml", "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+PYEOF
+
+LOG_CONFIG_PATH="$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('/data/homeserver.yaml'))
+print(cfg.get('log_config', '/data/localhost.log.config'))
+")"
 
 # Replace Synapse's generated file logger with a console logger so startup and
-# runtime logs are visible in `docker compose logs` across local Docker and DIND.
+# runtime logs are visible in docker compose logs across local Docker and DIND.
 cat > "${LOG_CONFIG_PATH}" <<'EOF'
 version: 1
 disable_existing_loggers: false

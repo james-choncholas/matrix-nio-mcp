@@ -47,5 +47,5 @@ jobs:
           push: true
           tags: |
             ${{ github.server_url }}/${{ github.repository }}:${{ github.ref_name }}
-            ${{ github.server_url }}/${{ github.repository }}:sha-${{GITHUB_SHA}}
+            ${{ github.server_url }}/${{ github.repository }}:sha-${{ github.sha }}
 

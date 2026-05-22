@@ -24,9 +24,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[test]"
+        run: pip install ".[test]"
       - name: Run unit tests
         run: python -m pytest tests/unit/ -v
 
@@ -53,9 +51,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[test]"
+        run: pip install ".[test]"
       - name: Verify Docker access
         run: docker version
       - name: Run integration tests
