@@ -75,7 +75,7 @@ class MatrixMCPClient:
             self._sync_task = asyncio.create_task(
                 self._client.sync_forever(
                     since=stored_token,
-                    timeout=30000,
+                    timeout=self._config.matrix_sync_timeout_ms,
                 )
             )
         else:
@@ -117,7 +117,7 @@ class MatrixMCPClient:
             self._sync_task = asyncio.create_task(
                 self._client.sync_forever(
                     since=initial_sync.next_batch,
-                    timeout=30000,
+                    timeout=self._config.matrix_sync_timeout_ms,
                 )
             )
 

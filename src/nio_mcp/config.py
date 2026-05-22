@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     backfill_limit: int = 100
     backfill_pages_max: int = 10  # 0 = unlimited
     message_buffer_size: int = 500
+    matrix_sync_timeout_ms: int = 30000
     sse_queue_maxsize: int = 100
     sse_port: int = 8000
+    allow_send_message: bool = False  # set ALLOW_SEND_MESSAGE=true to enable
 
 
 @lru_cache

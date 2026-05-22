@@ -39,6 +39,7 @@ def test_default_values(monkeypatch):
     assert s.backfill_limit == 100
     assert s.backfill_pages_max == 10
     assert s.message_buffer_size == 500
+    assert s.matrix_sync_timeout_ms == 30000
     assert s.sse_queue_maxsize == 100
     assert s.sse_port == 8000
 

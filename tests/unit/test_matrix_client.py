@@ -13,6 +13,7 @@ def _make_config(
     backfill_pages_max=2,
     backfill_limit=5,
     message_buffer_size=50,
+    matrix_sync_timeout_ms=30000,
 ):
     cfg = MagicMock()
     cfg.matrix_homeserver_url = "https://matrix.example.org"
@@ -23,6 +24,7 @@ def _make_config(
     cfg.backfill_pages_max = backfill_pages_max
     cfg.backfill_limit = backfill_limit
     cfg.message_buffer_size = message_buffer_size
+    cfg.matrix_sync_timeout_ms = matrix_sync_timeout_ms
     return cfg
 
 

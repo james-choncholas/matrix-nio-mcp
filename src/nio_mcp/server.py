@@ -36,7 +36,8 @@ mcp = Server("nio-mcp")
 
 @mcp.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return [
+    settings = get_settings()
+    tools = [
         types.Tool(
             name="get_recent_messages",
             description=(
@@ -72,18 +73,6 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="send_message",
-            description="Send a text message to a Matrix room.",
-            inputSchema={
-                "type": "object",
-                "required": ["room_id", "body"],
-                "properties": {
-                    "room_id": {"type": "string", "description": "Target room ID"},
-                    "body": {"type": "string", "description": "Message text"},
-                },
-            },
-        ),
-        types.Tool(
             name="get_message_context",
             description=(
                 "Fetch messages surrounding a specific event. "
@@ -101,6 +90,22 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
     ]
+    if settings.allow_send_message:
+        tools.append(
+            types.Tool(
+                name="send_message",
+                description="Send a text message to a Matrix room.",
+                inputSchema={
+                    "type": "object",
+                    "required": ["room_id", "body"],
+                    "properties": {
+                        "room_id": {"type": "string", "description": "Target room ID"},
+                        "body": {"type": "string", "description": "Message text"},
+                    },
+                },
+            )
+        )
+    return tools
 
 
 @mcp.call_tool()
@@ -142,6 +147,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             return [types.TextContent(type="text", text=json.dumps([r.to_dict() for r in results]))]
 
         if name == "send_message":
+            if not get_settings().allow_send_message:
+                return [types.TextContent(type="text", text=json.dumps({"error": "send_message is disabled; set ALLOW_SEND_MESSAGE=true to enable"}))]
             result = await _matrix_client.send_message(
                 room_id=arguments["room_id"],
                 body=arguments["body"],

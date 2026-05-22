@@ -122,9 +122,21 @@ async def test_search_messages_whitespace_query_uses_scroll(mock_embedding_and_s
 
 
 async def test_send_message_delegates_to_client(mock_matrix_client):
-    data = await _call("send_message", {"room_id": "!r:x", "body": "Hi!"})
+    settings = MagicMock()
+    settings.allow_send_message = True
+    with patch("nio_mcp.server.get_settings", return_value=settings):
+        data = await _call("send_message", {"room_id": "!r:x", "body": "Hi!"})
     mock_matrix_client.send_message.assert_called_once_with(room_id="!r:x", body="Hi!")
     assert data["event_id"] == "$sent:example.org"
+
+
+async def test_send_message_disabled_by_default(mock_matrix_client):
+    settings = MagicMock()
+    settings.allow_send_message = False
+    with patch("nio_mcp.server.get_settings", return_value=settings):
+        data = await _call("send_message", {"room_id": "!r:x", "body": "Hi!"})
+    mock_matrix_client.send_message.assert_not_called()
+    assert "error" in data
 
 
 async def test_get_message_context_delegates_to_client(mock_matrix_client):
