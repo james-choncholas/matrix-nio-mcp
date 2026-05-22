@@ -44,7 +44,11 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-compose -f docker-compose.integration.yml pull
+# Pull images for services that don't have a build section
+compose -f docker-compose.integration.yml pull --ignore-pull-failures || true
+# Build images for services that have a build section (e.g. synapse)
+compose -f docker-compose.integration.yml build
+# Start the stack and wait for healthchecks
 compose -f docker-compose.integration.yml up -d --wait
 
 run_pytest "$@"

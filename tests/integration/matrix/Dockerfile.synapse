@@ -1,0 +1,8 @@
+FROM ghcr.io/element-hq/synapse:latest
+
+# Copy the custom startup script into the image
+COPY start-synapse.sh /start-synapse.sh
+RUN chmod +x /start-synapse.sh
+
+# Use the script as the entrypoint
+ENTRYPOINT ["/bin/sh", "/start-synapse.sh"]
