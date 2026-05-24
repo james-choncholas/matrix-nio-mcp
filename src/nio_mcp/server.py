@@ -145,7 +145,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             )
 
             if query:
-                embedding_client = EmbeddingClient(api_key=settings.openai_api_key)
+                embedding_client = EmbeddingClient(
+                    api_key=settings.openai_api_key,
+                    model=settings.embedding_model,
+                    dimensions=settings.embedding_vector_size,
+                )
                 vector = await embedding_client.embed(query)
                 results = await vector_store.search(
                     vector,
@@ -253,7 +257,11 @@ async def _run() -> None:
 
     settings = get_settings()
 
-    embedding_client = EmbeddingClient(api_key=settings.openai_api_key)
+    embedding_client = EmbeddingClient(
+        api_key=settings.openai_api_key,
+        model=settings.embedding_model,
+        dimensions=settings.embedding_vector_size,
+    )
     vector_store = VectorStore(
         host=settings.qdrant_host,
         port=settings.qdrant_port,
@@ -274,7 +282,7 @@ async def _run() -> None:
     _webhook_dispatcher = webhook_dispatcher
     _matrix_client = matrix_client
 
-    await vector_store.init_collection()
+    await vector_store.init_collection(vector_size=settings.embedding_vector_size)
     await matrix_client.start()
 
     uvicorn_config = uvicorn.Config(

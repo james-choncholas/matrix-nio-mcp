@@ -327,7 +327,7 @@ Collection name: `QDRANT_COLLECTION` (default `matrix_messages`).
 
 | Field | Value |
 |---|---|
-| Vector size | 1536 (OpenAI `text-embedding-3-small`) |
+| Vector size | `EMBEDDING_VECTOR_SIZE` (default 1536, matches `text-embedding-3-small`) |
 | Distance | Cosine |
 | Point ID | UUID derived from SHA-256 of `event_id` (first 16 bytes → UUID) — deterministic, so upserting the same event twice is idempotent |
 
@@ -403,6 +403,8 @@ docker compose up --build
 | `MESSAGE_BUFFER_SIZE` | `500` | `deque(maxlen=...)` — oldest entries dropped automatically |
 | `SSE_QUEUE_MAXSIZE` | `100` | Per subscriber; drop-oldest on full |
 | `MCP_PORT` | `8000` | Port for the HTTP server; MCP at `/mcp`, Matrix event SSE at `/events` |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model name |
+| `EMBEDDING_VECTOR_SIZE` | `1536` | Must match the chosen model's output dimension; mismatch causes cryptic Qdrant errors |
 | `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production. Also stores `buffer.json` (restart warm-start cache), `pending_index.json` (live-message retry journal), and `backfill_complete` (bootstrap sentinel) |
 
 ---

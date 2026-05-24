@@ -76,3 +76,18 @@ async def test_embed_batch_passes_correct_model(client, mock_openai):
     await client.embed("test")
     call_kwargs = mock_openai.embeddings.create.call_args
     assert call_kwargs.kwargs["model"] == "text-embedding-3-small"
+
+
+async def test_embed_batch_passes_dimensions_when_set(mock_openai):
+    mock_openai.embeddings.create.return_value = _make_embedding_response([[0.0] * 512])
+    client = EmbeddingClient(api_key="test-key", dimensions=512)
+    await client.embed("test")
+    call_kwargs = mock_openai.embeddings.create.call_args
+    assert call_kwargs.kwargs["dimensions"] == 512
+
+
+async def test_embed_batch_omits_dimensions_when_not_set(client, mock_openai):
+    mock_openai.embeddings.create.return_value = _make_embedding_response([[0.0]])
+    await client.embed("test")
+    call_kwargs = mock_openai.embeddings.create.call_args
+    assert "dimensions" not in call_kwargs.kwargs

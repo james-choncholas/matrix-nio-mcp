@@ -45,6 +45,8 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `QDRANT_PORT` | no | `6333` | Qdrant port |
 | `QDRANT_COLLECTION` | no | `matrix_messages` | Qdrant collection name |
 | `OPENAI_API_KEY` | yes | — | OpenAI API key for embeddings |
+| `EMBEDDING_MODEL` | no | `text-embedding-3-small` | OpenAI embedding model; `dimensions` is only supported by `text-embedding-3-*` models |
+| `EMBEDDING_VECTOR_SIZE` | no | `1536` | Output dimension requested from the model and used for the Qdrant collection; see note below |
 | `WEBHOOK_URL` | no | — | URL to POST new-message payloads to |
 | `WEBHOOK_SECRET` | no | — | HMAC-SHA256 signing secret; enables `X-Nio-MCP-Signature` header |
 | `BACKFILL_LIMIT` | no | `100` | Messages fetched per page per room during startup backfill |
@@ -53,6 +55,8 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `MATRIX_SYNC_TIMEOUT_MS` | no | `30000` | Matrix `/sync` long-poll timeout in milliseconds |
 | `SSE_QUEUE_MAXSIZE` | no | `100` | Per-subscriber SSE event queue cap (oldest dropped when full) |
 | `MCP_PORT` | no | `8000` | Port for the HTTP server; MCP at `/mcp`, Matrix event SSE at `/events`, health at `/health` |
+
+> **Changing `EMBEDDING_MODEL` or `EMBEDDING_VECTOR_SIZE`** requires wiping the Qdrant collection and re-syncing from scratch. The collection is created at startup with the configured vector size; vectors already stored at a different dimension will cause Qdrant errors that cannot be recovered without dropping the collection. To reset: stop the server, delete the Qdrant collection (or point `QDRANT_COLLECTION` at a new name), delete `MATRIX_STORE_PATH/backfill_complete`, then restart.
 
 ### Obtaining credentials
 

@@ -11,8 +11,6 @@ from nio_mcp.models import MessageRecord, SearchResult
 
 logger = logging.getLogger(__name__)
 
-VECTOR_SIZE = 1536  # text-embedding-3-small
-
 
 def _event_id_to_uuid(event_id: str) -> str:
     digest = hashlib.sha256(event_id.encode()).digest()[:16]
@@ -72,7 +70,7 @@ class VectorStore:
         self._client = AsyncQdrantClient(host=host, port=port)
         self._collection = collection
 
-    async def init_collection(self, vector_size: int = VECTOR_SIZE) -> None:
+    async def init_collection(self, vector_size: int = 1536) -> None:
         existing = await self._client.get_collections()
         names = {c.name for c in existing.collections}
         if self._collection not in names:

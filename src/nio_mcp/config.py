@@ -18,8 +18,10 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     qdrant_collection: str = "matrix_messages"
 
-    # OpenAI
+    # OpenAI / Embeddings
     openai_api_key: str
+    embedding_model: str = "text-embedding-3-small"
+    embedding_vector_size: int = 1536
 
     # Webhook
     webhook_url: str = ""
