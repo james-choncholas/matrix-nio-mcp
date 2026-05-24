@@ -153,6 +153,7 @@ class MatrixMCPClient:
     ) -> list[MessageRecord]:
         results = list(self._buffer)
         if sender:
+            # Exact MXID match only — no fuzzy/display-name matching
             results = [m for m in results if m.sender == sender]
         if room_id:
             results = [m for m in results if m.room_id == room_id]

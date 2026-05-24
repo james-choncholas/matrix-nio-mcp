@@ -42,13 +42,14 @@ async def list_tools() -> list[types.Tool]:
             name="get_recent_messages",
             description=(
                 "Return the k most recent Matrix messages. "
-                "Optionally filter by sender (MXID) and/or room_id."
+                "Optionally filter by sender (exact MXID only, e.g. @alice:example.org) "
+                "and/or room_id. For fuzzy sender matching use search_messages."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "k": {"type": "integer", "default": 20, "description": "Number of messages"},
-                    "sender": {"type": "string", "description": "Filter by sender MXID"},
+                    "sender": {"type": "string", "description": "Exact MXID to filter by (e.g. @alice:example.org)"},
                     "room_id": {"type": "string", "description": "Filter by room ID"},
                 },
             },
@@ -66,10 +67,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Natural-language search query"},
+                    "query": {"type": "string", "description": "Natural-language search query; embedded with OpenAI and matched by cosine similarity"},
                     "sender": {
                         "type": "string",
-                        "description": "Sender name or MXID; matched flexibly",
+                        "description": "Sender name or MXID. Full MXIDs (@alice:example.org) are matched exactly; short names ('alice') use fuzzy word search against the sender's MXID, display name, and localpart.",
                     },
                     "limit": {"type": "integer", "default": 10, "description": "Max results"},
                     "after_ts": {"type": "integer", "description": "Only return messages after this timestamp (Unix milliseconds)"},

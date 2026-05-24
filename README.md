@@ -4,8 +4,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for [Matrix](
 
 ## Features
 
-- **`get_recent_messages`** — fetch the most recent messages across all joined rooms, with optional filtering by sender or room
-- **`search_messages`** — search indexed message history by semantic similarity, sender, time range, or any combination
+- **`get_recent_messages`** — fetch the most recent messages across all joined rooms, with optional filtering by exact MXID sender or room
+- **`search_messages`** — search indexed message history by semantic similarity (OpenAI embeddings + cosine similarity), fuzzy sender name, time range, or any combination
 - **`get_message_context`** — retrieve messages surrounding a specific event (useful after a search hit)
 - **`send_message`** — send a text message to any joined room
 - **Webhooks** — POST to a configurable URL and/or stream events via SSE whenever a new message arrives
@@ -89,7 +89,7 @@ Returns the `k` most recent messages from the in-memory buffer (populated by bac
 }
 ```
 
-`sender` and `room_id` are optional filters. Returns a list of message objects:
+`sender` and `room_id` are optional filters. `sender` must be an exact MXID (e.g. `@alice:example.org`) — partial names are not matched. Returns a list of message objects:
 
 ```json
 [
@@ -118,7 +118,7 @@ Search indexed messages by semantic similarity, sender, time range, or any combi
 ```
 
 - **`query`** — natural-language search; embedded with OpenAI and matched by cosine similarity against Qdrant.
-- **`sender`** — sender name or MXID. Matching is flexible, so short names like `fred` can still match messages stored with fuller display names.
+- **`sender`** — fuzzy sender filter. A full MXID (`@alice:example.org`) is matched exactly; anything else (e.g. `alice`, `fred`) uses word search against the sender's MXID, display name, and localpart variants.
 - **`after_ts` / `before_ts`** — Unix millisecond timestamps (optional). Filter results to a time window.
 - If `query` is omitted, up to `limit` matching messages are returned newest-first by timestamp with `score: 0`.
 
