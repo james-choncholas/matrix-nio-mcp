@@ -21,7 +21,7 @@ tests/
 └── integration/      # Real Qdrant required; auto-skipped if not reachable
 ```
 
-Entry point: `server.py:main()` runs an `anyio` task group with two concurrent tasks — the MCP stdio server and a uvicorn/FastAPI server for SSE.
+Entry point: `server.py:main()` starts a uvicorn/FastAPI server. The MCP protocol is served over Streamable HTTP at `/mcp` via `StreamableHTTPSessionManager`. A separate `/events` SSE endpoint streams live Matrix messages for webhook subscribers.
 
 ---
 
@@ -303,6 +303,14 @@ Steps 5, 5.5, and 9 together cover the full timeline without gaps or overlaps: b
 
 ---
 
+## MCP transport
+
+The server uses the MCP Streamable HTTP transport (`StreamableHTTPSessionManager` from `mcp.server.streamable_http_manager`). MCP clients connect via HTTP POST/GET/DELETE to `/mcp`. Sessions are stateful by default — the session manager tracks each client connection and delivers responses over SSE streams within the HTTP session.
+
+The `StreamableHTTPSessionManager` is created in the FastAPI lifespan and stored in the `_session_manager` module global. A thin `_MCPASGIApp` wrapper is mounted at `/mcp` and delegates raw ASGI calls to `session_manager.handle_request()`.
+
+---
+
 ## SSE fan-out design
 
 `WebhookDispatcher` maintains a `set[asyncio.Queue]`. Each SSE client connection calls `subscribe()` to get its own bounded queue and `unsubscribe()` (in a `finally` block) to remove it on disconnect.
@@ -394,6 +402,7 @@ docker compose up --build
 | `BACKFILL_LIMIT` | `100` | Messages per `room_messages()` call |
 | `MESSAGE_BUFFER_SIZE` | `500` | `deque(maxlen=...)` — oldest entries dropped automatically |
 | `SSE_QUEUE_MAXSIZE` | `100` | Per subscriber; drop-oldest on full |
+| `MCP_PORT` | `8000` | Port for the HTTP server; MCP at `/mcp`, Matrix event SSE at `/events` |
 | `MATRIX_STORE_PATH` | `/tmp/nio_store` | Created automatically; use a volume in production. Also stores `buffer.json` (restart warm-start cache), `pending_index.json` (live-message retry journal), and `backfill_complete` (bootstrap sentinel) |
 
 ---

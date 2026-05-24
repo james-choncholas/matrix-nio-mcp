@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     message_buffer_size: int = 500
     matrix_sync_timeout_ms: int = 30000
     sse_queue_maxsize: int = 100
-    sse_port: int = 8000
+    mcp_port: int = 8000
+    mcp_session_timeout: int = 1800  # seconds; idle sessions are reaped after this long
     allow_send_message: bool = False  # set ALLOW_SEND_MESSAGE=true to enable
 
 

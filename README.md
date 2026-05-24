@@ -28,7 +28,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The MCP server runs on stdio (connect via an MCP host such as Claude Desktop). The SSE endpoint is available at `http://localhost:8000/events`.
+The MCP server is available at `http://localhost:8000/mcp` (Streamable HTTP transport). The Matrix event SSE stream is at `http://localhost:8000/events`.
 
 ## Configuration
 
@@ -52,7 +52,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `MESSAGE_BUFFER_SIZE` | no | `500` | In-memory ring buffer size for `get_recent_messages` |
 | `MATRIX_SYNC_TIMEOUT_MS` | no | `30000` | Matrix `/sync` long-poll timeout in milliseconds |
 | `SSE_QUEUE_MAXSIZE` | no | `100` | Per-subscriber SSE event queue cap (oldest dropped when full) |
-| `SSE_PORT` | no | `8000` | Port for the SSE and health HTTP endpoints |
+| `MCP_PORT` | no | `8000` | Port for the HTTP server; MCP at `/mcp`, Matrix event SSE at `/events`, health at `/health` |
 
 ### Obtaining credentials
 
@@ -182,29 +182,29 @@ curl http://localhost:8000/health
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   nio-mcp process                   │
-│                                                     │
-│  ┌─────────────┐    ┌──────────────────────────┐   │
-│  │  MCP server │    │  FastAPI (SSE + health)  │   │
-│  │   (stdio)   │    │       :8000              │   │
-│  └──────┬──────┘    └────────────┬─────────────┘   │
-│         │                        │                  │
-│         └──────────┬─────────────┘                  │
-│                    │                                 │
-│         ┌──────────▼──────────┐                     │
-│         │   MatrixMCPClient   │                     │
-│         │  (nio AsyncClient)  │                     │
-│         └──────┬──────────────┘                     │
-│                │                                     │
-│    ┌───────────┼──────────────┐                     │
-│    │           │              │                     │
-│  ┌─▼──────┐ ┌─▼────────┐ ┌──▼──────────────┐      │
-│  │Qdrant  │ │ OpenAI   │ │WebhookDispatcher│      │
-│  │vector  │ │embeddings│ │ HTTP POST + SSE │      │
-│  │store   │ │          │ │  per-subscriber │      │
-│  └────────┘ └──────────┘ └────────────────┘      │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                      nio-mcp process                     │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │         FastAPI  :8000                             │  │
+│  │   /mcp  (MCP Streamable HTTP)                      │  │
+│  │   /events  (Matrix message SSE fan-out)            │  │
+│  │   /health                                          │  │
+│  └───────────────────────┬────────────────────────────┘  │
+│                          │                               │
+│             ┌────────────▼────────────┐                  │
+│             │     MatrixMCPClient     │                  │
+│             │    (nio AsyncClient)    │                  │
+│             └──────┬─────────────────┘                  │
+│                    │                                     │
+│       ┌────────────┼──────────────┐                     │
+│       │            │              │                     │
+│  ┌────▼───┐  ┌─────▼────┐  ┌─────▼───────────┐        │
+│  │Qdrant  │  │ OpenAI   │  │WebhookDispatcher│        │
+│  │vector  │  │embeddings│  │ HTTP POST + SSE │        │
+│  │store   │  │          │  │  per-subscriber │        │
+│  └────────┘  └──────────┘  └────────────────┘        │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **Startup sequence:**
@@ -262,18 +262,13 @@ tests/
 
 ### Connecting to Claude Desktop
 
-Add to `claude_desktop_config.json`:
+Start the server with `docker compose up --build`, then point Claude Desktop at the HTTP endpoint by adding to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "matrix": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "--env-file", "/path/to/your/.env",
-        "nio-mcp"
-      ]
+      "url": "http://localhost:8000/mcp"
     }
   }
 }

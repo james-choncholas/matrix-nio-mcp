@@ -10,10 +10,7 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
-    # MCP stdio is consumed by an MCP host (e.g. Claude Desktop) via docker exec
-    # or by wrapping with `docker run -i`. The SSE webhook endpoint is on :8000.
-    stdin_open: true
-    tty: false
+    # MCP HTTP transport on :8000/mcp. Matrix event SSE stream on :8000/events.
 
   qdrant:
     image: qdrant/qdrant:v1.18.0

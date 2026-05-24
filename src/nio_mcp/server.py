@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import sys
@@ -9,7 +8,7 @@ import anyio
 import uvicorn
 from fastapi import FastAPI
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp import types
 from sse_starlette.sse import EventSourceResponse
 
@@ -26,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Module-level singletons set during startup
 _matrix_client: Optional[MatrixMCPClient] = None
 _webhook_dispatcher: Optional[WebhookDispatcher] = None
+_session_manager: Optional[StreamableHTTPSessionManager] = None
 
 # --------------------------------------------------------------------------- #
 # MCP server                                                                   #
@@ -190,10 +190,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 
 # --------------------------------------------------------------------------- #
-# FastAPI SSE app                                                              #
+# FastAPI app                                                                  #
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="nio-mcp SSE")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _session_manager
+    settings = get_settings()
+    _session_manager = StreamableHTTPSessionManager(
+        app=mcp,
+        stateless=False,
+        session_idle_timeout=settings.mcp_session_timeout,
+    )
+    async with _session_manager.run():
+        yield
+    _session_manager = None
+
+
+app = FastAPI(title="nio-mcp", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -216,6 +230,18 @@ async def sse_endpoint():
             _webhook_dispatcher.unsubscribe(q)
 
     return EventSourceResponse(event_generator())
+
+
+class _MCPASGIApp:
+    async def __call__(self, scope, receive, send):
+        if _session_manager is None:
+            raise RuntimeError("MCP session manager not initialized")
+        await _session_manager.handle_request(scope, receive, send)
+
+
+# add_route with a class-instance endpoint bypasses Starlette's request_response()
+# wrapper and the Mount trailing-slash redirect, so /mcp is served directly.
+app.add_route("/mcp", _MCPASGIApp(), methods=["GET", "POST", "DELETE"], include_in_schema=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -254,28 +280,17 @@ async def _run() -> None:
     uvicorn_config = uvicorn.Config(
         app=app,
         host="0.0.0.0",
-        port=settings.sse_port,
+        port=settings.mcp_port,
         log_level="warning",
     )
     uvicorn_server = uvicorn.Server(uvicorn_config)
 
     try:
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(_run_mcp)
-            tg.start_soon(uvicorn_server.serve)
+        await uvicorn_server.serve()
     finally:
         await matrix_client.stop()
         await vector_store.close()
         await webhook_dispatcher.close()
-
-
-async def _run_mcp() -> None:
-    async with stdio_server() as (read_stream, write_stream):
-        await mcp.run(
-            read_stream,
-            write_stream,
-            mcp.create_initialization_options(),
-        )
 
 
 def main() -> None:

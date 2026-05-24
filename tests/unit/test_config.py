@@ -42,7 +42,7 @@ def test_default_values(monkeypatch):
     assert s.message_buffer_size == 500
     assert s.matrix_sync_timeout_ms == 30000
     assert s.sse_queue_maxsize == 100
-    assert s.sse_port == 8000
+    assert s.mcp_port == 8000
 
 
 def test_env_overrides_defaults(monkeypatch):
@@ -50,12 +50,12 @@ def test_env_overrides_defaults(monkeypatch):
         "QDRANT_HOST": "qdrant.internal",
         "QDRANT_PORT": "6334",
         "BACKFILL_LIMIT": "50",
-        "SSE_PORT": "9000",
+        "MCP_PORT": "9000",
     })
     assert s.qdrant_host == "qdrant.internal"
     assert s.qdrant_port == 6334
     assert s.backfill_limit == 50
-    assert s.sse_port == 9000
+    assert s.mcp_port == 9000
 
 
 def test_required_fields_loaded_from_env(monkeypatch):
