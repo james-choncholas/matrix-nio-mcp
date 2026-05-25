@@ -2,8 +2,6 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import Optional
-
 import anyio
 import uvicorn
 from fastapi import FastAPI
@@ -15,23 +13,23 @@ from sse_starlette.sse import EventSourceResponse
 from nio_mcp.config import get_settings
 from nio_mcp.embeddings import EmbeddingClient
 from nio_mcp.matrix_client import MatrixMCPClient
-from nio_mcp.models import MessageRecord
 from nio_mcp.vector_store import VectorStore
 from nio_mcp.webhook import WebhookDispatcher
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
-# Module-level singletons set during startup
-_matrix_client: Optional[MatrixMCPClient] = None
-_webhook_dispatcher: Optional[WebhookDispatcher] = None
-_session_manager: Optional[StreamableHTTPSessionManager] = None
+_session_manager: StreamableHTTPSessionManager | None = None
 
 # --------------------------------------------------------------------------- #
 # MCP server                                                                   #
 # --------------------------------------------------------------------------- #
 
 mcp = Server("nio-mcp")
+
+
+def _json_response(data) -> list[types.TextContent]:
+    return [types.TextContent(type="text", text=json.dumps(data))]
 
 
 @mcp.list_tools()
@@ -116,17 +114,18 @@ async def list_tools() -> list[types.Tool]:
 
 @mcp.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-    if _matrix_client is None:
+    matrix_client = app.state.matrix_client
+    if matrix_client is None:
         raise RuntimeError("Matrix client not initialised")
 
     try:
         if name == "get_recent_messages":
-            records = await _matrix_client.get_recent_messages(
+            records = await matrix_client.get_recent_messages(
                 k=arguments.get("k", 20),
                 sender=arguments.get("sender"),
                 room_id=arguments.get("room_id"),
             )
-            return [types.TextContent(type="text", text=json.dumps([r.to_dict() for r in records]))]
+            return _json_response([r.to_dict() for r in records])
 
         if name == "search_messages":
             query = arguments.get("query", "").strip()
@@ -136,7 +135,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             before_ts = arguments.get("before_ts")
 
             if not query and not sender and after_ts is None and before_ts is None:
-                return [types.TextContent(type="text", text=json.dumps({"error": "Provide at least one of: query, sender, after_ts, before_ts"}))]
+                return _json_response({"error": "Provide at least one of: query, sender, after_ts, before_ts"})
 
             settings = get_settings()
             vector_store = VectorStore(
@@ -167,31 +166,31 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     before_ts=before_ts,
                 )
 
-            return [types.TextContent(type="text", text=json.dumps([r.to_dict() for r in results]))]
+            return _json_response([r.to_dict() for r in results])
 
         if name == "send_message":
             if not get_settings().allow_send_message:
-                return [types.TextContent(type="text", text=json.dumps({"error": "send_message is disabled; set ALLOW_SEND_MESSAGE=true to enable"}))]
-            result = await _matrix_client.send_message(
+                return _json_response({"error": "send_message is disabled; set ALLOW_SEND_MESSAGE=true to enable"})
+            result = await matrix_client.send_message(
                 room_id=arguments["room_id"],
                 body=arguments["body"],
             )
-            return [types.TextContent(type="text", text=json.dumps(result))]
+            return _json_response(result)
 
         if name == "get_message_context":
-            result = await _matrix_client.get_message_context(
+            result = await matrix_client.get_message_context(
                 room_id=arguments["room_id"],
                 event_id=arguments["event_id"],
                 before=arguments.get("before", 5),
                 after=arguments.get("after", 5),
             )
-            return [types.TextContent(type="text", text=json.dumps(result))]
+            return _json_response(result)
 
-        return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+        return _json_response({"error": f"Unknown tool: {name}"})
 
     except Exception as exc:
         logger.exception("Tool %s raised an error", name)
-        return [types.TextContent(type="text", text=json.dumps({"error": str(exc)}))]
+        return _json_response({"error": str(exc)})
 
 
 # --------------------------------------------------------------------------- #
@@ -201,61 +200,6 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _session_manager
-    settings = get_settings()
-    _session_manager = StreamableHTTPSessionManager(
-        app=mcp,
-        stateless=False,
-        session_idle_timeout=settings.mcp_session_timeout,
-    )
-    async with _session_manager.run():
-        yield
-    _session_manager = None
-
-
-app = FastAPI(title="nio-mcp", lifespan=lifespan)
-
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-@app.get("/events")
-async def sse_endpoint():
-    if _webhook_dispatcher is None:
-        raise RuntimeError("Webhook dispatcher not initialised")
-    q = _webhook_dispatcher.subscribe()
-
-    async def event_generator():
-        try:
-            while True:
-                data = await q.get()
-                yield {"data": data}
-        finally:
-            _webhook_dispatcher.unsubscribe(q)
-
-    return EventSourceResponse(event_generator())
-
-
-class _MCPASGIApp:
-    async def __call__(self, scope, receive, send):
-        if _session_manager is None:
-            raise RuntimeError("MCP session manager not initialized")
-        await _session_manager.handle_request(scope, receive, send)
-
-
-# add_route with a class-instance endpoint bypasses Starlette's request_response()
-# wrapper and the Mount trailing-slash redirect, so /mcp is served directly.
-app.add_route("/mcp", _MCPASGIApp(), methods=["GET", "POST", "DELETE"], include_in_schema=False)
-
-
-# --------------------------------------------------------------------------- #
-# Entry point                                                                  #
-# --------------------------------------------------------------------------- #
-
-async def _run() -> None:
-    global _matrix_client, _webhook_dispatcher
-
     settings = get_settings()
 
     embedding_client = EmbeddingClient(
@@ -280,26 +224,84 @@ async def _run() -> None:
         webhook_dispatcher=webhook_dispatcher,
     )
 
-    _webhook_dispatcher = webhook_dispatcher
-    _matrix_client = matrix_client
+    app.state.matrix_client = matrix_client
+    app.state.webhook_dispatcher = webhook_dispatcher
 
-    await vector_store.init_collection(vector_size=settings.embedding_vector_size)
-    await matrix_client.start()
+    _session_manager = StreamableHTTPSessionManager(
+        app=mcp,
+        stateless=False,
+        session_idle_timeout=settings.mcp_session_timeout,
+    )
 
+    try:
+        await vector_store.init_collection(vector_size=settings.embedding_vector_size)
+        await webhook_dispatcher.start()
+        await matrix_client.start()
+
+        async with _session_manager.run():
+            yield
+    finally:
+        await matrix_client.stop()
+        await vector_store.close()
+        await webhook_dispatcher.close()
+        _session_manager = None
+        app.state.matrix_client = None
+        app.state.webhook_dispatcher = None
+
+
+app = FastAPI(title="nio-mcp", lifespan=lifespan)
+app.state.matrix_client = None
+app.state.webhook_dispatcher = None
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/events")
+async def sse_endpoint():
+    webhook_dispatcher = app.state.webhook_dispatcher
+    if webhook_dispatcher is None:
+        raise RuntimeError("Webhook dispatcher not initialised")
+    q = webhook_dispatcher.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                data = await q.get()
+                yield {"data": data}
+        finally:
+            webhook_dispatcher.unsubscribe(q)
+
+    return EventSourceResponse(event_generator())
+
+
+class _MCPASGIApp:
+    async def __call__(self, scope, receive, send):
+        if _session_manager is None:
+            raise RuntimeError("MCP session manager not initialized")
+        await _session_manager.handle_request(scope, receive, send)
+
+
+# add_route with a class-instance endpoint bypasses Starlette's request_response()
+# wrapper and the Mount trailing-slash redirect, so /mcp is served directly.
+app.add_route("/mcp", _MCPASGIApp(), methods=["GET", "POST", "DELETE"], include_in_schema=False)
+
+
+# --------------------------------------------------------------------------- #
+# Entry point                                                                  #
+# --------------------------------------------------------------------------- #
+
+async def _run() -> None:
+    settings = get_settings()
     uvicorn_config = uvicorn.Config(
         app=app,
         host="0.0.0.0",
         port=settings.mcp_port,
         log_level="warning",
     )
-    uvicorn_server = uvicorn.Server(uvicorn_config)
-
-    try:
-        await uvicorn_server.serve()
-    finally:
-        await matrix_client.stop()
-        await vector_store.close()
-        await webhook_dispatcher.close()
+    await uvicorn.Server(uvicorn_config).serve()
 
 
 def main() -> None:

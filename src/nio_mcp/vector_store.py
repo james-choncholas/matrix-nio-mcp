@@ -65,6 +65,39 @@ def _looks_like_mxid(value: str) -> bool:
     return value.startswith("@") and ":" in value and " " not in value
 
 
+def _room_condition(room_id: str) -> qmodels.FieldCondition:
+    return qmodels.FieldCondition(key="room_id", match=qmodels.MatchValue(value=room_id))
+
+
+def _exact_sender_condition(sender: str) -> qmodels.FieldCondition:
+    return qmodels.FieldCondition(key="sender", match=qmodels.MatchValue(value=sender))
+
+
+def _timestamp_condition(
+    after_ts: Optional[int], before_ts: Optional[int]
+) -> qmodels.FieldCondition:
+    return qmodels.FieldCondition(
+        key="timestamp",
+        range=qmodels.Range(gte=after_ts, lte=before_ts),
+    )
+
+
+def _fuzzy_sender_min_should(
+    sender_query: str, match_count: int
+) -> Optional[qmodels.MinShould]:
+    terms = _sender_query_terms(sender_query)
+    if not terms:
+        return None
+    conditions = [
+        qmodels.FieldCondition(key="sender_search", match=qmodels.MatchText(text=term))
+        for term in terms
+    ]
+    return qmodels.MinShould(
+        conditions=conditions,
+        min_count=max(1, min(match_count, len(conditions))),
+    )
+
+
 class VectorStore:
     def __init__(self, host: str, port: int, collection: str) -> None:
         self._client = AsyncQdrantClient(host=host, port=port)
@@ -135,46 +168,18 @@ class VectorStore:
         conditions: list[qmodels.FieldCondition] = []
         min_should: Optional[qmodels.MinShould] = None
         if room_id:
-            conditions.append(
-                qmodels.FieldCondition(key="room_id", match=qmodels.MatchValue(value=room_id))
-            )
+            conditions.append(_room_condition(room_id))
         if sender:
-            conditions.append(
-                qmodels.FieldCondition(key="sender", match=qmodels.MatchValue(value=sender))
-            )
+            conditions.append(_exact_sender_condition(sender))
         if after_ts is not None or before_ts is not None:
-            conditions.append(
-                qmodels.FieldCondition(
-                    key="timestamp",
-                    range=qmodels.Range(
-                        gte=after_ts,
-                        lte=before_ts,
-                    ),
-                )
-            )
+            conditions.append(_timestamp_condition(after_ts, before_ts))
         if sender_query:
-            stripped_query = sender_query.strip()
-            if _looks_like_mxid(stripped_query):
-                conditions.append(
-                    qmodels.FieldCondition(
-                        key="sender",
-                        match=qmodels.MatchValue(value=stripped_query),
-                    )
-                )
+            stripped = sender_query.strip()
+            if _looks_like_mxid(stripped):
+                conditions.append(_exact_sender_condition(stripped))
             else:
-                sender_conditions = [
-                    qmodels.FieldCondition(
-                        key="sender_search",
-                        match=qmodels.MatchText(text=term),
-                    )
-                    for term in _sender_query_terms(stripped_query)
-                ]
-                if sender_conditions:
-                    min_count = sender_match_count or len(sender_conditions)
-                    min_should = qmodels.MinShould(
-                        conditions=sender_conditions,
-                        min_count=max(1, min(min_count, len(sender_conditions))),
-                    )
+                count = sender_match_count or len(_sender_query_terms(stripped))
+                min_should = _fuzzy_sender_min_should(stripped, count)
 
         if not conditions and min_should is None:
             return None
@@ -232,7 +237,7 @@ class VectorStore:
         ]
 
     @staticmethod
-    def _results_from_hits(hits) -> list[SearchResult]:
+    def _results_from_hits(hits, default_score: float = 0.0) -> list[SearchResult]:
         results = []
         for hit in hits:
             p = hit.payload
@@ -244,7 +249,7 @@ class VectorStore:
                     sender_name=p.get("sender_name", p["sender"]),
                     body=p["body"],
                     timestamp=p["timestamp"],
-                    score=hit.score,
+                    score=getattr(hit, "score", default_score),
                 )
             )
         return results
@@ -329,21 +334,7 @@ class VectorStore:
             with_payload=True,
             with_vectors=False,
         )
-        results = []
-        for point in points:
-            p = point.payload
-            results.append(
-                SearchResult(
-                    event_id=p["event_id"],
-                    room_id=p["room_id"],
-                    sender=p["sender"],
-                    sender_name=p.get("sender_name", p["sender"]),
-                    body=p["body"],
-                    timestamp=p["timestamp"],
-                    score=0.0,
-                )
-            )
-        return results
+        return self._results_from_hits(points)
 
     async def scroll(
         self,

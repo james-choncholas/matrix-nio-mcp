@@ -84,6 +84,7 @@ async def test_dispatch_no_http_post_when_no_url(dispatcher):
 async def test_dispatch_posts_to_webhook_url():
     route = respx.post("http://example.com/hook").mock(return_value=httpx.Response(200))
     d = WebhookDispatcher(webhook_url="http://example.com/hook", queue_maxsize=10)
+    await d.start()
     await d.dispatch(RECORD)
     assert route.called
 
@@ -96,6 +97,7 @@ async def test_dispatch_includes_hmac_signature():
         webhook_secret="mysecret",
         queue_maxsize=10,
     )
+    await d.start()
     await d.dispatch(RECORD)
     assert route.called
     request = route.calls.last.request
@@ -107,6 +109,7 @@ async def test_dispatch_includes_hmac_signature():
 async def test_dispatch_webhook_failure_does_not_raise():
     respx.post("http://example.com/hook").mock(side_effect=httpx.ConnectError("refused"))
     d = WebhookDispatcher(webhook_url="http://example.com/hook", queue_maxsize=10)
+    await d.start()
     await d.dispatch(RECORD)  # must not propagate
 
 
@@ -114,6 +117,7 @@ async def test_dispatch_webhook_failure_does_not_raise():
 async def test_dispatch_http_error_status_does_not_raise():
     respx.post("http://example.com/hook").mock(return_value=httpx.Response(503))
     d = WebhookDispatcher(webhook_url="http://example.com/hook", queue_maxsize=10)
+    await d.start()
     await d.dispatch(RECORD)  # must not propagate
 
 
@@ -121,6 +125,7 @@ async def test_dispatch_http_error_status_does_not_raise():
 async def test_dispatch_webhook_failure_still_delivers_to_subscribers():
     respx.post("http://example.com/hook").mock(side_effect=httpx.ConnectError("refused"))
     d = WebhookDispatcher(webhook_url="http://example.com/hook", queue_maxsize=10)
+    await d.start()
     q = d.subscribe()
     await d.dispatch(RECORD)
     assert not q.empty()
@@ -133,6 +138,7 @@ async def test_dispatch_webhook_failure_logs_warning(caplog):
     import logging
     respx.post("http://example.com/hook").mock(side_effect=httpx.ConnectError("refused"))
     d = WebhookDispatcher(webhook_url="http://example.com/hook", queue_maxsize=10)
+    await d.start()
     with caplog.at_level(logging.WARNING, logger="nio_mcp.webhook"):
         await d.dispatch(RECORD)
     assert any("webhook" in r.message.lower() or "http" in r.message.lower() for r in caplog.records)

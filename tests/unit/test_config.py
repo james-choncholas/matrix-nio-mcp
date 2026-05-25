@@ -76,3 +76,28 @@ def test_get_settings_returns_settings_instance(monkeypatch):
         assert isinstance(s, Settings)
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("SSE_QUEUE_MAXSIZE", "0"),
+    ("SSE_QUEUE_MAXSIZE", "-1"),
+    ("BACKFILL_LIMIT", "0"),
+    ("MESSAGE_BUFFER_SIZE", "-5"),
+    ("MATRIX_SYNC_TIMEOUT_MS", "0"),
+    ("MCP_SESSION_TIMEOUT", "-1"),
+    ("MCP_PORT", "0"),
+    ("MCP_PORT", "99999"),
+    ("QDRANT_PORT", "65536"),
+    ("BACKFILL_PAGES_MAX", "-1"),
+])
+def test_invalid_numeric_fields_raise_validation_error(monkeypatch, field, value):
+    for key, val in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.setenv(field, value)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_backfill_pages_max_zero_is_valid(monkeypatch):
+    s = _make_settings(monkeypatch, {"BACKFILL_PAGES_MAX": "0"})
+    assert s.backfill_pages_max == 0

@@ -194,7 +194,7 @@ async def test_search_with_multi_token_sender_query_falls_back_to_broader_match(
 
 
 async def test_scroll_returns_search_results_with_zero_score(store, mock_qdrant):
-    point = MagicMock()
+    point = MagicMock(spec=["payload"])
     point.payload = {
         "event_id": "$s:example.org",
         "room_id": "!room:example.org",

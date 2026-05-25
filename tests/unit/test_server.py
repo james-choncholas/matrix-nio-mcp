@@ -23,9 +23,9 @@ def mock_matrix_client():
     client.get_message_context = AsyncMock(
         return_value={"event": RECORD.to_dict(), "before": [], "after": []}
     )
-    server_module._matrix_client = client
+    server_module.app.state.matrix_client = client
     yield client
-    server_module._matrix_client = None
+    server_module.app.state.matrix_client = None
 
 
 SEARCH_RESULT = SearchResult(
@@ -182,20 +182,20 @@ async def test_tool_exception_returns_error_dict(mock_matrix_client):
 
 
 async def test_call_tool_raises_runtime_error_when_client_not_initialized():
-    original = server_module._matrix_client
-    server_module._matrix_client = None
+    original = server_module.app.state.matrix_client
+    server_module.app.state.matrix_client = None
     try:
         with pytest.raises(RuntimeError, match="Matrix client not initialised"):
             await server_module.call_tool("get_recent_messages", {})
     finally:
-        server_module._matrix_client = original
+        server_module.app.state.matrix_client = original
 
 
 async def test_sse_endpoint_raises_runtime_error_when_dispatcher_not_initialized():
-    original = server_module._webhook_dispatcher
-    server_module._webhook_dispatcher = None
+    original = server_module.app.state.webhook_dispatcher
+    server_module.app.state.webhook_dispatcher = None
     try:
         with pytest.raises(RuntimeError, match="Webhook dispatcher not initialised"):
             await server_module.sse_endpoint()
     finally:
-        server_module._webhook_dispatcher = original
+        server_module.app.state.webhook_dispatcher = original

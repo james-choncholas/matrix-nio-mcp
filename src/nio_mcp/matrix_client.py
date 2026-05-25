@@ -15,7 +15,6 @@ from nio import (
     RoomMessagesResponse,
     RoomContextResponse,
 )
-from nio.events.room_events import RoomMessageText as RoomMessageTextEvent
 from nio.responses import JoinedRoomsResponse
 import nio
 
@@ -284,13 +283,20 @@ class MatrixMCPClient:
                     self._buffer.append(record)
             logger.info("Loaded %d messages from buffer cache", len(records))
         except FileNotFoundError:
-            pass
+            logger.debug("Buffer cache not found at %s, starting fresh", path)
         except Exception:
             logger.warning("Failed to load message buffer cache", exc_info=True)
 
     @property
     def _pending_index_path(self) -> str:
         return os.path.join(self._config.matrix_store_path, "pending_index.json")
+
+    def _save_pending_index_safe(self) -> bool:
+        try:
+            self._save_pending_index()
+            return True
+        except Exception:
+            return False
 
     def _save_pending_index(self) -> None:
         """Write pending index atomically with fsync. Raises on failure."""
@@ -310,7 +316,7 @@ class MatrixMCPClient:
             if self._pending_index:
                 logger.info("Loaded %d pending-index records from disk", len(self._pending_index))
         except FileNotFoundError:
-            pass
+            logger.debug("Pending index not found at %s, starting fresh", self._pending_index_path)
         except Exception:
             logger.warning("Failed to load pending index", exc_info=True)
 
@@ -430,7 +436,7 @@ class MatrixMCPClient:
 
         logger.info("Backfilled %d messages from room %s (%d pages)", fetched, room_id, page)
 
-    async def _on_message(self, room: MatrixRoom, event: RoomMessageTextEvent) -> None:
+    async def _on_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         if event.event_id in self._seen_event_ids:
             return
         self._seen_event_ids.add(event.event_id)
@@ -447,9 +453,7 @@ class MatrixMCPClient:
         self._buffer.append(record)
         # Register as pending before indexing so a crash leaves it recoverable.
         self._pending_index[record.event_id] = record
-        try:
-            self._save_pending_index()
-        except Exception:
+        if not self._save_pending_index_safe():
             logger.error(
                 "Failed to persist pending index for %s; deferring indexing until next startup",
                 record.event_id,
@@ -458,9 +462,7 @@ class MatrixMCPClient:
         try:
             await self._index_message(record)
             del self._pending_index[record.event_id]
-            try:
-                self._save_pending_index()
-            except Exception:
+            if not self._save_pending_index_safe():
                 logger.warning(
                     "Indexed %s but could not clear pending index; "
                     "record will be idempotently re-indexed on next startup",
@@ -507,7 +509,7 @@ class MatrixMCPClient:
                     return member.display_name
         return self._sender_display_name(sender)
 
-    def _parse_event(self, room_id: str, event: RoomMessageTextEvent) -> Optional[MessageRecord]:
+    def _parse_event(self, room_id: str, event: RoomMessageText) -> Optional[MessageRecord]:
         body = getattr(event, "body", None)
         if not body:
             return None

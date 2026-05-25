@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +37,30 @@ class Settings(BaseSettings):
     mcp_port: int = 8000
     mcp_session_timeout: int = 1800  # seconds; idle sessions are reaped after this long
     allow_send_message: bool = False  # set ALLOW_SEND_MESSAGE=true to enable
+
+    @field_validator(
+        "backfill_limit", "message_buffer_size", "matrix_sync_timeout_ms",
+        "sse_queue_maxsize", "mcp_session_timeout", "embedding_vector_size",
+    )
+    @classmethod
+    def must_be_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("must be a positive integer")
+        return v
+
+    @field_validator("backfill_pages_max")
+    @classmethod
+    def must_be_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("must be 0 (unlimited) or a positive integer")
+        return v
+
+    @field_validator("mcp_port", "qdrant_port")
+    @classmethod
+    def valid_port(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("must be a valid port number (1–65535)")
+        return v
 
 
 @lru_cache

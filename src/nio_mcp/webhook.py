@@ -30,10 +30,8 @@ class WebhookDispatcher:
         self._subscribers: set[asyncio.Queue] = set()
         self._http: Optional[httpx.AsyncClient] = None
 
-    def _get_http(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(timeout=10.0)
-        return self._http
+    async def start(self) -> None:
+        self._http = httpx.AsyncClient(timeout=10.0)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=self._queue_maxsize)
@@ -68,6 +66,8 @@ class WebhookDispatcher:
                 )
 
     async def _http_post(self, record: MessageRecord, payload: str) -> None:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=10.0)
         headers = {"Content-Type": "application/json"}
         if self._webhook_secret:
             sig = hmac.new(
@@ -76,9 +76,8 @@ class WebhookDispatcher:
                 hashlib.sha256,
             ).hexdigest()
             headers["X-Nio-MCP-Signature"] = f"sha256={sig}"
-        async with self._get_http() as client:
-            resp = await client.post(self._webhook_url, content=payload, headers=headers)
-            resp.raise_for_status()
+        resp = await self._http.post(self._webhook_url, content=payload, headers=headers)
+        resp.raise_for_status()
 
     async def close(self) -> None:
         if self._http and not self._http.is_closed:
