@@ -1,18 +1,15 @@
 """Transport-level tests for the /mcp HTTP endpoint.
 
 Covers:
-- GET/POST/DELETE at /mcp return 200 without any redirect (regression guard
-  against the Starlette Mount trailing-slash 307 that existed before this fix)
-- /mcp/ redirects back to /mcp (correct direction; clients using the wrong
-  path get corrected rather than bounced away)
+- GET/POST/DELETE at /mcp return 200 without any redirect
+- /mcp/ redirects back to /mcp
 - RuntimeError when the session manager has not been initialised
 - Lifespan wires StreamableHTTPSessionManager with a non-None idle timeout
-  (session leak prevention)
 """
 
 import pytest
 from contextlib import asynccontextmanager, contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from starlette.testclient import TestClient
 
 import nio_mcp.server as server_module
@@ -37,20 +34,17 @@ class _FakeSessionManager:
 @contextmanager
 def _service_patches():
     """Patches the three long-running service constructors so they don't open real connections."""
-    async def _noop(*_, **__):
-        pass
-
     fake_vs = MagicMock()
-    fake_vs.init_collection = lambda **_: _noop()
-    fake_vs.close = lambda: _noop()
+    fake_vs.init_collection = AsyncMock()
+    fake_vs.close = AsyncMock()
 
     fake_wd = MagicMock()
-    fake_wd.start = lambda: _noop()
-    fake_wd.close = lambda: _noop()
+    fake_wd.start = AsyncMock()
+    fake_wd.close = AsyncMock()
 
     fake_mc = MagicMock()
-    fake_mc.start = lambda: _noop()
-    fake_mc.stop = lambda: _noop()
+    fake_mc.start = AsyncMock()
+    fake_mc.stop = AsyncMock()
 
     with (
         patch("nio_mcp.server.VectorStore", return_value=fake_vs),
@@ -65,15 +59,21 @@ def _service_patches():
 def _startup_patches(fake_sm):
     """Full set of lifespan patches: services + session manager + settings."""
     with _service_patches():
+        settings = MagicMock()
+        settings.http_auth_token = ""
+        settings.mcp_session_timeout = 1800
+        settings.embedding_vector_size = 1536
         with (
             patch("nio_mcp.server.StreamableHTTPSessionManager", return_value=fake_sm),
-            patch("nio_mcp.server.get_settings", return_value=MagicMock()),
+            patch("nio_mcp.server.get_settings", return_value=settings),
         ):
             yield
 
 
 @pytest.fixture()
 def mcp_client():
+    # Force reset of the global session manager to avoid cross-test leaks
+    server_module._session_manager = None
     sm = _FakeSessionManager()
     with _startup_patches(sm):
         with TestClient(server_module.app, raise_server_exceptions=True) as client:
@@ -150,6 +150,8 @@ def test_lifespan_passes_idle_timeout_to_session_manager():
 
     settings = MagicMock()
     settings.mcp_session_timeout = 900
+    settings.http_auth_token = ""
+    settings.embedding_vector_size = 1536
 
     with _service_patches():
         with (

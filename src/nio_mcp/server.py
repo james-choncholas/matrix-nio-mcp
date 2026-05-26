@@ -4,7 +4,8 @@ import sys
 from contextlib import asynccontextmanager
 import anyio
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp import types
@@ -197,6 +198,21 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 # FastAPI app                                                                  #
 # --------------------------------------------------------------------------- #
 
+security = HTTPBearer(auto_error=False)
+
+
+async def check_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    settings = get_settings()
+    if not settings.http_auth_token:
+        return
+    if credentials is None or credentials.credentials != settings.http_auth_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _session_manager
@@ -260,7 +276,7 @@ async def health():
 
 
 @app.get("/events")
-async def sse_endpoint():
+async def sse_endpoint(auth=Depends(check_auth)):
     webhook_dispatcher = app.state.webhook_dispatcher
     if webhook_dispatcher is None:
         raise RuntimeError("Webhook dispatcher not initialised")
@@ -279,6 +295,27 @@ async def sse_endpoint():
 
 class _MCPASGIApp:
     async def __call__(self, scope, receive, send):
+        settings = get_settings()
+        if settings.http_auth_token and scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode("utf-8", "ignore")
+            
+            scheme_prefix = auth_header[:7].lower()
+            if scheme_prefix != "bearer " or auth_header[7:] != settings.http_auth_token:
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"text/plain"),
+                        (b"www-authenticate", b"Bearer"),
+                    ],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b"Unauthorized",
+                })
+                return
+
         if _session_manager is None:
             raise RuntimeError("MCP session manager not initialized")
         await _session_manager.handle_request(scope, receive, send)

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     mcp_port: int = 8000
     mcp_session_timeout: int = 1800  # seconds; idle sessions are reaped after this long
     allow_send_message: bool = False  # set ALLOW_SEND_MESSAGE=true to enable
+    http_auth_token: str = ""  # if set, require Bearer token in Authorization header
 
     @field_validator(
         "backfill_limit", "message_buffer_size", "matrix_sync_timeout_ms",
