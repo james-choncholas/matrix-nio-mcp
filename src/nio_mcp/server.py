@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import sys
@@ -242,6 +243,8 @@ async def lifespan(app: FastAPI):
 
     app.state.matrix_client = matrix_client
     app.state.webhook_dispatcher = webhook_dispatcher
+    app.state.matrix_start_task = None
+    app.state.matrix_start_error = None
 
     _session_manager = StreamableHTTPSessionManager(
         app=mcp,
@@ -249,29 +252,55 @@ async def lifespan(app: FastAPI):
         session_idle_timeout=settings.mcp_session_timeout,
     )
 
+    async def _start_matrix_client() -> None:
+        try:
+            await matrix_client.start()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Surface hard startup failures without blocking liveness on long backfills.
+            app.state.matrix_start_error = exc
+            logger.exception("Matrix client startup failed")
+
     try:
         await vector_store.init_collection(vector_size=settings.embedding_vector_size)
         await webhook_dispatcher.start()
-        await matrix_client.start()
+        app.state.matrix_start_task = asyncio.create_task(_start_matrix_client())
 
         async with _session_manager.run():
             yield
     finally:
+        matrix_start_task = getattr(app.state, "matrix_start_task", None)
+        if matrix_start_task is not None and not matrix_start_task.done():
+            matrix_start_task.cancel()
+            try:
+                await matrix_start_task
+            except asyncio.CancelledError:
+                pass
         await matrix_client.stop()
         await vector_store.close()
         await webhook_dispatcher.close()
         _session_manager = None
         app.state.matrix_client = None
         app.state.webhook_dispatcher = None
+        app.state.matrix_start_task = None
+        app.state.matrix_start_error = None
 
 
 app = FastAPI(title="nio-mcp", lifespan=lifespan)
 app.state.matrix_client = None
 app.state.webhook_dispatcher = None
+app.state.matrix_start_task = None
+app.state.matrix_start_error = None
 
 
 @app.get("/health")
 async def health():
+    if app.state.matrix_start_error is not None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Matrix client startup failed",
+        )
     return {"status": "ok"}
 
 

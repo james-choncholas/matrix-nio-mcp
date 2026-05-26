@@ -11,6 +11,20 @@ async def test_health_is_public():
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
+
+@pytest.mark.asyncio
+async def test_health_returns_503_when_matrix_startup_failed():
+    original = app.state.matrix_start_error
+    app.state.matrix_start_error = RuntimeError("boom")
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            response = await ac.get("/health")
+    finally:
+        app.state.matrix_start_error = original
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Matrix client startup failed"}
+
 @pytest.mark.asyncio
 async def test_events_requires_auth_when_configured():
     settings = MagicMock()

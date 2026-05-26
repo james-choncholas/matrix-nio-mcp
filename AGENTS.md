@@ -23,11 +23,13 @@ tests/
 
 Entry point: `server.py:main()` starts a uvicorn/FastAPI server. The MCP protocol is served over Streamable HTTP at `/mcp` via `StreamableHTTPSessionManager`. A separate `/events` SSE endpoint streams live Matrix messages for webhook subscribers.
 
+Important server-level behavior: FastAPI startup does **not** wait for `MatrixMCPClient.start()` to finish. The lifespan creates the shared dependencies (`VectorStore`, `WebhookDispatcher`, `MatrixMCPClient`), starts the vector store and webhook dispatcher, then launches `matrix_client.start()` in a background task. This keeps the HTTP server responsive during long backfills. `/health` is therefore a **liveness** endpoint, not a "backfill complete" readiness check: it returns `200 {"status": "ok"}` while bootstrap/backfill is still running, and returns `503` only if Matrix startup failed hard.
+
 ---
 
 ## Component wiring
 
-`server.py` constructs all components and holds module-level references to `_matrix_client` and `_webhook_dispatcher` (used by MCP tool handlers and the SSE endpoint respectively). The dependency graph is:
+`server.py` constructs all components during the FastAPI lifespan. `MatrixMCPClient` and `WebhookDispatcher` are stored on `app.state` for the MCP tool handlers and SSE endpoint respectively; the MCP session manager is kept in the `_session_manager` module global. The dependency graph is:
 
 ```
 MatrixMCPClient
@@ -308,6 +310,11 @@ Steps 5, 5.5, and 9 together cover the full timeline without gaps or overlaps: b
 The server uses the MCP Streamable HTTP transport (`StreamableHTTPSessionManager` from `mcp.server.streamable_http_manager`). MCP clients connect via HTTP POST/GET/DELETE to `/mcp`. Sessions are stateful by default — the session manager tracks each client connection and delivers responses over SSE streams within the HTTP session.
 
 The `StreamableHTTPSessionManager` is created in the FastAPI lifespan and stored in the `_session_manager` module global. A thin `_MCPASGIApp` wrapper is mounted at `/mcp` and delegates raw ASGI calls to `session_manager.handle_request()`.
+
+Lifespan ordering matters:
+- `vector_store.init_collection()` and `webhook_dispatcher.start()` are awaited before the app begins serving.
+- `matrix_client.start()` is launched as a background task and may still be backfilling after the server is already accepting `/mcp`, `/events`, and `/health` requests.
+- Shutdown cancels that background startup task if it is still running, then calls `matrix_client.stop()` and closes the other shared services.
 
 ---
 
