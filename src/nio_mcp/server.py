@@ -151,6 +151,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     api_key=settings.openai_api_key,
                     model=settings.embedding_model,
                     dimensions=settings.embedding_vector_size,
+                    max_tokens=settings.embedding_max_tokens,
                 )
                 vector = await embedding_client.embed(query)
                 results = await vector_store.search(
@@ -223,6 +224,7 @@ async def lifespan(app: FastAPI):
         api_key=settings.openai_api_key,
         model=settings.embedding_model,
         dimensions=settings.embedding_vector_size,
+        max_tokens=settings.embedding_max_tokens,
     )
     vector_store = VectorStore(
         host=settings.qdrant_host,

@@ -399,6 +399,13 @@ To run the full local stack from `docker-compose.yml`:
 docker compose up --build
 ```
 
+## Building and pushing the container manually
+
+```bash
+docker build --platform linux/amd64 -t gitea.choncholas.com/cloud/nio-mcp:main .
+docker push gitea.choncholas.com/cloud/nio-mcp:main
+```
+
 ---
 
 ## Key configuration defaults

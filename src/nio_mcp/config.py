@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     openai_api_key: str
     embedding_model: str = "text-embedding-3-small"
     embedding_vector_size: int = 1536
+    embedding_max_tokens: int = 8192  # truncate texts longer than this before embedding
 
     # Webhook
     webhook_url: str = ""
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     @field_validator(
         "backfill_limit", "message_buffer_size", "matrix_sync_timeout_ms",
         "sse_queue_maxsize", "mcp_session_timeout", "embedding_vector_size",
+        "embedding_max_tokens",
     )
     @classmethod
     def must_be_positive(cls, v: int) -> int:
