@@ -1,6 +1,7 @@
 import asyncio
 import os
 import pytest
+import inspect
 from unittest.mock import AsyncMock, MagicMock, patch, call
 from collections import deque
 
@@ -59,11 +60,19 @@ def _make_initial_sync(room_id="!room:example.org", prev_batch="t1"):
 @pytest.fixture
 def mock_nio_client():
     with patch("nio_mcp.matrix_client.AsyncClient") as cls:
-        instance = AsyncMock()
+        instance = MagicMock(spec=nio.AsyncClient)
         cls.return_value = instance
         instance.restore_login = MagicMock()
         instance.add_event_callback = MagicMock()
+        instance.sync = AsyncMock()
+        instance.joined_rooms = AsyncMock()
+        instance.room_messages = AsyncMock()
+        instance.room_context = AsyncMock()
+        instance.room_send = AsyncMock()
+        instance.close = AsyncMock()
+        instance.sync_forever = AsyncMock()
         instance.rooms = {}
+        instance.loaded_sync_token = ""
         yield instance
 
 
@@ -75,21 +84,33 @@ def mock_makedirs():
 
 @pytest.fixture
 def vector_store():
-    vs = AsyncMock()
+    from nio_mcp.vector_store import VectorStore
+    vs = MagicMock(spec=VectorStore)
+    vs.upsert = AsyncMock()
+    vs.search = AsyncMock()
+    vs.scroll = AsyncMock()
+    vs.init_collection = AsyncMock()
+    vs.close = AsyncMock()
     return vs
 
 
 @pytest.fixture
 def embedding_client():
-    ec = AsyncMock()
-    ec.embed.return_value = [0.1] * 1536
-    ec.embed_batch.return_value = [[0.1] * 1536]
+    from nio_mcp.embeddings import EmbeddingClient
+    ec = MagicMock(spec=EmbeddingClient)
+    ec.embed = AsyncMock(return_value=[0.1] * 1536)
+    ec.embed_batch = AsyncMock(return_value=[[0.1] * 1536])
+    ec.close = AsyncMock()
     return ec
 
 
 @pytest.fixture
 def webhook_dispatcher():
-    wd = AsyncMock()
+    from nio_mcp.webhook import WebhookDispatcher
+    wd = MagicMock(spec=WebhookDispatcher)
+    wd.dispatch = AsyncMock()
+    wd.start = AsyncMock()
+    wd.close = AsyncMock()
     return wd
 
 
@@ -116,7 +137,13 @@ async def test_start_creates_store_dir_before_restore_login(
     mock_nio_client.joined_rooms.return_value = MagicMock(rooms=[])
 
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
-    with patch("nio_mcp.matrix_client.asyncio.create_task"):
+    with patch("nio_mcp.matrix_client.asyncio.create_task") as mock_create:
+        def _check_and_close(coro):
+            if not inspect.iscoroutine(coro):
+                raise TypeError(f"Expected coroutine, got {type(coro)}")
+            coro.close()
+            return MagicMock()
+        mock_create.side_effect = _check_and_close
         await c.start()
 
     assert call_order.index("makedirs") < call_order.index("restore_login")
@@ -131,7 +158,13 @@ async def test_start_calls_restore_login_with_env_credentials(
     mock_nio_client.joined_rooms.return_value = MagicMock(rooms=[])
 
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
-    with patch("nio_mcp.matrix_client.asyncio.create_task"):
+    with patch("nio_mcp.matrix_client.asyncio.create_task") as mock_create:
+        def _check_and_close(coro):
+            if not inspect.iscoroutine(coro):
+                raise TypeError(f"Expected coroutine, got {type(coro)}")
+            coro.close()
+            return MagicMock()
+        mock_create.side_effect = _check_and_close
         await c.start()
 
     mock_nio_client.restore_login.assert_called_once_with(
@@ -153,6 +186,8 @@ async def test_start_passes_initial_sync_next_batch_to_sync_forever(
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
     with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
         def close_coro(coro):
+            if not inspect.iscoroutine(coro):
+                raise TypeError(f"Expected coroutine, got {type(coro)}")
             coro.close()
             return MagicMock()
 
@@ -178,6 +213,8 @@ async def test_start_resumes_from_stored_token_on_restart(
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
     with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
         def capture_and_close(coro):
+            if not inspect.iscoroutine(coro):
+                raise TypeError(f"Expected coroutine, got {type(coro)}")
             coro.close()
             return MagicMock()
 

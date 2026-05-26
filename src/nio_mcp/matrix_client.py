@@ -8,7 +8,7 @@ from typing import AsyncIterator, Optional
 
 from nio import (
     AsyncClient,
-    ClientConfig,
+    AsyncClientConfig,
     MatrixRoom,
     RoomMessageText,
     SyncResponse,
@@ -53,7 +53,7 @@ class MatrixMCPClient:
             homeserver=self._config.matrix_homeserver_url,
             user=self._config.matrix_user_id,
             store_path=self._config.matrix_store_path,
-            config=ClientConfig(store_sync_tokens=True),
+            config=AsyncClientConfig(store_sync_tokens=True),
         )
         self._client.restore_login(
             user_id=self._config.matrix_user_id,

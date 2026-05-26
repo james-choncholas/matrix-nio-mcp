@@ -67,17 +67,17 @@ sync_forever callback
 ### `AsyncClient` construction
 
 ```python
-from nio import AsyncClient, ClientConfig
+from nio import AsyncClient, AsyncClientConfig
 
 client = AsyncClient(
     homeserver="https://matrix.example.org",
     user="@bot:example.org",
     store_path="/data/nio_store",       # directory for Olm SQLite DB
-    config=ClientConfig(store_sync_tokens=True),
+    config=AsyncClientConfig(store_sync_tokens=True),
 )
 ```
 
-`store_path` must be an **existing directory** — nio calls `load_store()` internally which opens a SQLite file there. Create it with `os.makedirs(path, exist_ok=True)` before constructing the client. `ClientConfig(store_sync_tokens=True)` persists the sync token to the store so restarts resume where they left off.
+`store_path` must be an **existing directory** — nio calls `load_store()` internally which opens a SQLite file there. Create it with `os.makedirs(path, exist_ok=True)` before constructing the client. `AsyncClientConfig(store_sync_tokens=True)` persists the sync token to the store so restarts resume where they left off.
 
 ### `restore_login()`
 
@@ -273,7 +273,7 @@ This retry path guarantees the process will not permanently skip bootstrap just 
 ```
 1. os.makedirs(store_path, exist_ok=True)
        ↓ nio needs the directory to exist before load_store() runs
-2. AsyncClient(..., store_path=..., config=ClientConfig(store_sync_tokens=True))
+2. AsyncClient(..., store_path=..., config=AsyncClientConfig(store_sync_tokens=True))
 3. client.restore_login(user_id, device_id, access_token)
        ↓ credentials set from env vars — works on first deployment
 4. initial_sync = await client.sync(full_state=True)
