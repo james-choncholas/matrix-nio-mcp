@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     matrix_user_id: str
     matrix_device_id: str  # required: E2EE store needs a stable device identity
     matrix_store_path: str = str(Path.home() / ".cache" / "nio-mcp" / "store")
-    # Optional: content of an Element-exported E2EE key file and its export passphrase.
+    # Optional: path to an Element-exported E2EE key file and its export passphrase.
     # When set, session keys are imported into the Olm store on first run (idempotent).
-    matrix_key_backup_content: str = ""
+    matrix_key_backup_file: str = ""
     matrix_key_backup_passphrase: str = ""
 
     # Qdrant
@@ -71,11 +71,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def key_backup_fields_must_be_paired(self) -> "Settings":
-        has_content = bool(self.matrix_key_backup_content)
+        has_file = bool(self.matrix_key_backup_file)
         has_passphrase = bool(self.matrix_key_backup_passphrase)
-        if has_content != has_passphrase:
+        if has_file != has_passphrase:
             raise ValueError(
-                "MATRIX_KEY_BACKUP_CONTENT and MATRIX_KEY_BACKUP_PASSPHRASE "
+                "MATRIX_KEY_BACKUP_FILE and MATRIX_KEY_BACKUP_PASSPHRASE "
                 "must be set together or not at all"
             )
         return self

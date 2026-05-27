@@ -3,7 +3,6 @@ import heapq
 import json
 import logging
 import os
-import tempfile
 from collections import deque
 from typing import AsyncIterator, Optional
 
@@ -253,19 +252,16 @@ class MatrixMCPClient:
         return os.path.join(self._config.matrix_store_path, "key_backup_imported")
 
     async def _import_key_backup(self) -> None:
-        if not self._config.matrix_key_backup_content:
+        if not self._config.matrix_key_backup_file:
             return
         if os.path.exists(self._key_backup_sentinel_path):
             logger.debug("E2EE key backup already imported; skipping")
             return
-        logger.info("Importing E2EE key backup from MATRIX_KEY_BACKUP_CONTENT")
-        fd, tmp_path = tempfile.mkstemp(suffix=".txt")
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.write(self._config.matrix_key_backup_content)
-            await self._client.import_keys(tmp_path, self._config.matrix_key_backup_passphrase)
-        finally:
-            os.unlink(tmp_path)
+        logger.info("Importing E2EE key backup from %s", self._config.matrix_key_backup_file)
+        await self._client.import_keys(
+            self._config.matrix_key_backup_file,
+            self._config.matrix_key_backup_passphrase,
+        )
         try:
             with open(self._key_backup_sentinel_path, "w") as f:
                 f.write("")
