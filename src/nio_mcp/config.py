@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     matrix_user_id: str
     matrix_device_id: str  # required: E2EE store needs a stable device identity
     matrix_store_path: str = str(Path.home() / ".cache" / "nio-mcp" / "store")
+    # Optional: content of an Element-exported E2EE key file and its export passphrase.
+    # When set, session keys are imported into the Olm store on first run (idempotent).
+    matrix_key_backup_content: str = ""
+    matrix_key_backup_passphrase: str = ""
 
     # Qdrant
     qdrant_host: str = "localhost"
@@ -64,6 +68,17 @@ class Settings(BaseSettings):
         if not (1 <= v <= 65535):
             raise ValueError("must be a valid port number (1–65535)")
         return v
+
+    @model_validator(mode="after")
+    def key_backup_fields_must_be_paired(self) -> "Settings":
+        has_content = bool(self.matrix_key_backup_content)
+        has_passphrase = bool(self.matrix_key_backup_passphrase)
+        if has_content != has_passphrase:
+            raise ValueError(
+                "MATRIX_KEY_BACKUP_CONTENT and MATRIX_KEY_BACKUP_PASSPHRASE "
+                "must be set together or not at all"
+            )
+        return self
 
 
 @lru_cache

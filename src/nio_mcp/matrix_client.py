@@ -3,6 +3,7 @@ import heapq
 import json
 import logging
 import os
+import tempfile
 from collections import deque
 from typing import AsyncIterator, Optional
 
@@ -60,6 +61,8 @@ class MatrixMCPClient:
             device_id=self._config.matrix_device_id,
             access_token=self._config.matrix_access_token,
         )
+
+        await self._import_key_backup()
 
         stored_token = self._client.loaded_sync_token
 
@@ -244,6 +247,33 @@ class MatrixMCPClient:
     # -------------------------------------------------------------------------
     # Internal
     # -------------------------------------------------------------------------
+
+    @property
+    def _key_backup_sentinel_path(self) -> str:
+        return os.path.join(self._config.matrix_store_path, "key_backup_imported")
+
+    async def _import_key_backup(self) -> None:
+        if not self._config.matrix_key_backup_content:
+            return
+        if os.path.exists(self._key_backup_sentinel_path):
+            logger.debug("E2EE key backup already imported; skipping")
+            return
+        logger.info("Importing E2EE key backup from MATRIX_KEY_BACKUP_CONTENT")
+        fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(self._config.matrix_key_backup_content)
+            await self._client.import_keys(tmp_path, self._config.matrix_key_backup_passphrase)
+        finally:
+            os.unlink(tmp_path)
+        try:
+            with open(self._key_backup_sentinel_path, "w") as f:
+                f.write("")
+        except Exception:
+            logger.exception(
+                "Failed to write key backup sentinel; import will run again on next start"
+            )
+        logger.info("E2EE key backup imported successfully")
 
     @property
     def _backfill_sentinel_path(self) -> str:

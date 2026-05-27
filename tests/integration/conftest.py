@@ -303,6 +303,8 @@ def make_matrix_config(tmp_path):
             matrix_user_id=user.user_id,
             matrix_device_id=user.device_id,
             matrix_store_path=str(store_dir),
+            matrix_key_backup_content="",
+            matrix_key_backup_passphrase="",
             backfill_limit=backfill_limit,
             backfill_pages_max=backfill_pages_max,
             message_buffer_size=message_buffer_size,

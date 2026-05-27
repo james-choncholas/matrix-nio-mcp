@@ -1,5 +1,6 @@
 import asyncio
 import os
+import tempfile
 import pytest
 import inspect
 from unittest.mock import AsyncMock, MagicMock, patch, call
@@ -22,6 +23,8 @@ def _make_config(
     cfg.matrix_device_id = "DEVID123"
     cfg.matrix_access_token = "syt_token"
     cfg.matrix_store_path = "/tmp/test_nio_store"
+    cfg.matrix_key_backup_content = ""
+    cfg.matrix_key_backup_passphrase = ""
     cfg.backfill_pages_max = backfill_pages_max
     cfg.backfill_limit = backfill_limit
     cfg.message_buffer_size = message_buffer_size
@@ -71,6 +74,7 @@ def mock_nio_client():
         instance.room_send = AsyncMock()
         instance.close = AsyncMock()
         instance.sync_forever = AsyncMock()
+        instance.import_keys = AsyncMock()
         instance.rooms = {}
         instance.loaded_sync_token = ""
         yield instance
@@ -499,3 +503,108 @@ async def test_send_message_calls_room_send(client, mock_nio_client):
         message_type="m.room.message",
         content={"msgtype": "m.text", "body": "Hello!"},
     )
+
+
+# --- _import_key_backup ---
+
+KEY_CONTENT = "-----BEGIN MEGOLM SESSION DATA-----\nABCDEF==\n-----END MEGOLM SESSION DATA-----"
+
+
+def _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                        mock_nio_client, content=KEY_CONTENT, passphrase="secret"):
+    cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
+    cfg.matrix_key_backup_content = content
+    cfg.matrix_key_backup_passphrase = passphrase
+    c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
+    c._client = mock_nio_client
+    return c
+
+
+async def test_import_key_backup_noop_when_content_empty(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client, content="")
+    await c._import_key_backup()
+    mock_nio_client.import_keys.assert_not_called()
+
+
+async def test_import_key_backup_noop_when_sentinel_exists(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    (tmp_path / "key_backup_imported").write_text("")
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client)
+    await c._import_key_backup()
+    mock_nio_client.import_keys.assert_not_called()
+
+
+async def test_import_key_backup_passes_content_and_passphrase(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    # Use a real async function so we can read the temp file while it still exists.
+    captured = {}
+    async def capture(path, passphrase):
+        with open(path) as f:
+            captured["content"] = f.read()
+        captured["passphrase"] = passphrase
+
+    mock_nio_client.import_keys = capture
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client)
+    await c._import_key_backup()
+
+    assert captured["content"] == KEY_CONTENT
+    assert captured["passphrase"] == "secret"
+
+
+async def test_import_key_backup_deletes_temp_file_after_success(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    created_paths = []
+    real_mkstemp = tempfile.mkstemp
+
+    def capturing_mkstemp(**kwargs):
+        fd, path = real_mkstemp(**kwargs)
+        created_paths.append(path)
+        return fd, path
+
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client)
+    with patch("nio_mcp.matrix_client.tempfile.mkstemp", side_effect=capturing_mkstemp):
+        await c._import_key_backup()
+
+    assert created_paths, "mkstemp was never called"
+    assert not os.path.exists(created_paths[0])
+
+
+async def test_import_key_backup_writes_sentinel_on_success(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client)
+    await c._import_key_backup()
+    assert (tmp_path / "key_backup_imported").exists()
+
+
+async def test_import_key_backup_deletes_temp_file_and_skips_sentinel_on_error(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    mock_nio_client.import_keys = AsyncMock(side_effect=RuntimeError("bad passphrase"))
+    created_paths = []
+    real_mkstemp = tempfile.mkstemp
+
+    def capturing_mkstemp(**kwargs):
+        fd, path = real_mkstemp(**kwargs)
+        created_paths.append(path)
+        return fd, path
+
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client)
+    with patch("nio_mcp.matrix_client.tempfile.mkstemp", side_effect=capturing_mkstemp):
+        with pytest.raises(RuntimeError, match="bad passphrase"):
+            await c._import_key_backup()
+
+    assert not os.path.exists(created_paths[0])
+    assert not (tmp_path / "key_backup_imported").exists()

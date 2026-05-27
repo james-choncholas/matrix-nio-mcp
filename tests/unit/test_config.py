@@ -101,3 +101,29 @@ def test_invalid_numeric_fields_raise_validation_error(monkeypatch, field, value
 def test_backfill_pages_max_zero_is_valid(monkeypatch):
     s = _make_settings(monkeypatch, {"BACKFILL_PAGES_MAX": "0"})
     assert s.backfill_pages_max == 0
+
+
+# --- key backup paired-field validator ---
+
+def test_key_backup_content_without_passphrase_raises(monkeypatch):
+    with pytest.raises(ValidationError, match="MATRIX_KEY_BACKUP_CONTENT and MATRIX_KEY_BACKUP_PASSPHRASE"):
+        _make_settings(monkeypatch, {"MATRIX_KEY_BACKUP_CONTENT": "-----BEGIN MEGOLM SESSION DATA-----\nABC\n-----END MEGOLM SESSION DATA-----"})
+
+
+def test_key_backup_passphrase_without_content_raises(monkeypatch):
+    with pytest.raises(ValidationError, match="MATRIX_KEY_BACKUP_CONTENT and MATRIX_KEY_BACKUP_PASSPHRASE"):
+        _make_settings(monkeypatch, {"MATRIX_KEY_BACKUP_PASSPHRASE": "secret"})
+
+
+def test_key_backup_both_set_is_valid(monkeypatch):
+    s = _make_settings(monkeypatch, {
+        "MATRIX_KEY_BACKUP_CONTENT": "-----BEGIN MEGOLM SESSION DATA-----\nABC\n-----END MEGOLM SESSION DATA-----",
+        "MATRIX_KEY_BACKUP_PASSPHRASE": "secret",
+    })
+    assert s.matrix_key_backup_passphrase == "secret"
+
+
+def test_key_backup_neither_set_is_valid(monkeypatch):
+    s = _make_settings(monkeypatch)
+    assert s.matrix_key_backup_content == ""
+    assert s.matrix_key_backup_passphrase == ""

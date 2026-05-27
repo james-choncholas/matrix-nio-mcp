@@ -41,6 +41,8 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `MATRIX_USER_ID` | yes | — | Full MXID, e.g. `@bot:example.org` |
 | `MATRIX_DEVICE_ID` | yes | — | Device ID — must be stable across restarts for E2EE |
 | `MATRIX_STORE_PATH` | no | `/tmp/nio_store` | Path for the Olm E2EE crypto database (created if absent) |
+| `MATRIX_KEY_BACKUP_CONTENT` | no | — | Full content of an Element-exported E2EE key file; see [Decrypting historical messages](#decrypting-historical-messages-in-encrypted-rooms) |
+| `MATRIX_KEY_BACKUP_PASSPHRASE` | no | — | Passphrase chosen when exporting; required when `MATRIX_KEY_BACKUP_CONTENT` is set |
 | `QDRANT_HOST` | no | `localhost` | Qdrant hostname (`qdrant` inside Docker Compose) |
 | `QDRANT_PORT` | no | `6333` | Qdrant port |
 | `QDRANT_COLLECTION` | no | `matrix_messages` | Qdrant collection name |
@@ -79,7 +81,7 @@ The response contains `access_token` and `device_id`.
 
 ### `get_recent_messages`
 
-Returns the `k` most recent messages from the in-memory buffer (populated by backfill and live sync).
+Returns the `k` most recent messages from the in-memory buffer (populated by backfill and live sync). During the initial startup backfill, this endpoint returns an empty array until the backfill phase has finished populating the buffer.
 
 ```json
 {
@@ -218,7 +220,39 @@ curl http://localhost:8000/health
 4. Backfill: for each joined room, paginate backwards from the initial sync's `prev_batch` token until `end` is absent (Matrix spec) or `BACKFILL_PAGES_MAX` is reached
 5. Register live message callback, then `sync_forever(since=<initial token>)` — no gap between backfill and live
 
-**E2EE note:** On a brand-new deployment the Olm store is empty, so messages encrypted before this device joined cannot be decrypted. New messages in encrypted rooms will be decryptable once device trust is established. Plaintext rooms are unaffected.
+**E2EE note:** On a brand-new deployment the Olm store is empty, so messages encrypted before this device joined cannot be decrypted. New messages in encrypted rooms will be decryptable once device trust is established. Plaintext rooms are unaffected. To recover historical encrypted messages see [Decrypting historical messages](#decrypting-historical-messages-in-encrypted-rooms).
+
+## Decrypting historical messages in encrypted rooms
+
+Matrix Megolm session keys are distributed once at send-time to all devices present in the room. Because the bot's device wasn't present when those sessions were created, it cannot decrypt historical ciphertext — the homeserver only stores encrypted blobs.
+
+Element (and other standard clients) let you export all session keys you hold to an encrypted file. Importing that file into nio-mcp gives the bot the keys it needs to decrypt backfilled history.
+
+### One-time setup
+
+1. In Element, go to **Settings → Security & Privacy → Export E2E room keys**.
+2. Choose a passphrase and copy the full content of the exported `.txt` file.
+3. Set the two environment variables. In Docker Compose use a YAML literal block scalar so the multi-line value is preserved:
+
+   ```yaml
+   services:
+     nio-mcp:
+       environment:
+         MATRIX_KEY_BACKUP_CONTENT: |
+           -----BEGIN MEGOLM SESSION DATA-----
+           AXNvbWViYXNlNjRkYXRh...
+           -----END MEGOLM SESSION DATA-----
+         MATRIX_KEY_BACKUP_PASSPHRASE: your-export-passphrase
+   ```
+
+4. Start the bot. On the first run the keys are written to a temporary file, imported into the Olm store, and a sentinel file (`key_backup_imported`) is written to `MATRIX_STORE_PATH`. Subsequent restarts skip the import automatically — the env vars can be left in place or removed; either way the import will not run again.
+
+### Notes
+
+- Both `MATRIX_KEY_BACKUP_CONTENT` and `MATRIX_KEY_BACKUP_PASSPHRASE` must be set together.
+- The import happens before backfill, so session keys are available when historical messages are paginated.
+- If the content or passphrase is wrong, startup fails with a clear error rather than silently skipping messages.
+- To force a re-import (e.g. after exporting a newer key file), delete `MATRIX_STORE_PATH/key_backup_imported` and restart.
 
 ## Development
 
