@@ -40,7 +40,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `MATRIX_ACCESS_TOKEN` | yes | — | Long-lived access token |
 | `MATRIX_USER_ID` | yes | — | Full MXID, e.g. `@bot:example.org` |
 | `MATRIX_DEVICE_ID` | yes | — | Device ID — must be stable across restarts for E2EE |
-| `MATRIX_STORE_PATH` | no | `/tmp/nio_store` | Path for the Olm E2EE crypto database (created if absent) |
+| `MATRIX_STORE_PATH` | no | `~/.cache/nio-mcp/store` | Path for the Olm E2EE crypto database (created if absent) |
 | `MATRIX_KEY_BACKUP_FILE` | no | — | Path to an Element-exported E2EE key file; see [Decrypting historical messages](#decrypting-historical-messages-in-encrypted-rooms) |
 | `MATRIX_KEY_BACKUP_PASSPHRASE` | no | — | Passphrase chosen when exporting; required when `MATRIX_KEY_BACKUP_FILE` is set |
 | `QDRANT_HOST` | no | `localhost` | Qdrant hostname (`qdrant` inside Docker Compose) |
@@ -57,6 +57,8 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `MATRIX_SYNC_TIMEOUT_MS` | no | `30000` | Matrix `/sync` long-poll timeout in milliseconds |
 | `SSE_QUEUE_MAXSIZE` | no | `100` | Per-subscriber SSE event queue cap (oldest dropped when full) |
 | `MCP_PORT` | no | `8000` | Port for the HTTP server; MCP at `/mcp`, Matrix event SSE at `/events`, health at `/health` |
+| `HTTP_AUTH_TOKEN` | no | — | If set, requires `Authorization: Bearer <token>` for all endpoints |
+| `ALLOW_SEND_MESSAGE` | no | `false` | Set to `true` to enable the `send_message` tool |
 
 > **Changing `EMBEDDING_MODEL` or `EMBEDDING_VECTOR_SIZE`** requires wiping the Qdrant collection and re-syncing from scratch. The collection is created at startup with the configured vector size; vectors already stored at a different dimension will cause Qdrant errors that cannot be recovered without dropping the collection. To reset: stop the server, delete the Qdrant collection (or point `QDRANT_COLLECTION` at a new name), delete `MATRIX_STORE_PATH/backfill_complete`, then restart.
 
