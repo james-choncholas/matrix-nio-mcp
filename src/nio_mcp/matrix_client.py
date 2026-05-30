@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import heapq
 import json
 import logging
@@ -61,9 +62,21 @@ class MatrixMCPClient:
             access_token=self._config.matrix_access_token,
         )
 
-        await self._import_key_backup()
+        key_just_imported = await self._import_key_backup()
 
         stored_token = self._client.loaded_sync_token
+
+        if key_just_imported and self._is_backfill_complete():
+            # A key backup was imported for the first time on this run.  During the
+            # previous backfill (which ran without the key) encrypted messages came
+            # back from nio as MegolmEvent, not RoomMessageText, so they were silently
+            # skipped.  Clearing the sentinel forces a full re-backfill so those
+            # messages are decrypted and indexed with the newly available session keys.
+            logger.info(
+                "E2EE key backup imported for the first time; clearing backfill sentinel "
+                "so historical encrypted messages are re-indexed with the new session keys"
+            )
+            os.remove(self._backfill_sentinel_path)
 
         if stored_token and self._is_backfill_complete():
             # Restart: reload the persisted buffer so get_recent_messages() is
@@ -80,14 +93,16 @@ class MatrixMCPClient:
                 )
             )
         else:
-            # Fresh start (or retry after interrupted backfill): anchor position,
-            # backfill history, then begin live sync.  The sentinel is written only
-            # after both phases complete, so an interruption here is safe to retry.
+            # Fresh start (or retry after interrupted backfill or first key import):
+            # anchor position, backfill history, then begin live sync.  The sentinel
+            # is written only after both phases complete, so an interruption here is
+            # safe to retry.
             if stored_token:
-                logger.warning(
-                    "Stored sync token found but backfill sentinel absent — "
-                    "previous backfill was interrupted; re-running backfill"
-                )
+                if not key_just_imported:
+                    logger.warning(
+                        "Stored sync token found but backfill sentinel absent — "
+                        "previous backfill was interrupted; re-running backfill"
+                    )
 
                 # nio.AsyncClient.sync() falls back to self.loaded_sync_token when
                 # no explicit `since` is given (async_client.py:1220).  On a retry
@@ -251,25 +266,48 @@ class MatrixMCPClient:
     def _key_backup_sentinel_path(self) -> str:
         return os.path.join(self._config.matrix_store_path, "key_backup_imported")
 
-    async def _import_key_backup(self) -> None:
+    def _compute_key_backup_fingerprint(self) -> str:
+        h = hashlib.sha256()
+        with open(self._config.matrix_key_backup_file, "rb") as f:
+            h.update(f.read())
+        h.update(self._config.matrix_key_backup_passphrase.encode())
+        return h.hexdigest()
+
+    async def _import_key_backup(self) -> bool:
+        """Import the E2EE key backup if configured and not already imported.
+
+        Returns True if the import actually ran this call, False if skipped.
+        Raises on misconfiguration (missing file, changed key/passphrase).
+        """
         if not self._config.matrix_key_backup_file:
-            return
+            return False
+        backup_file = self._config.matrix_key_backup_file
+        if not os.path.exists(backup_file):
+            raise FileNotFoundError(
+                f"MATRIX_KEY_BACKUP_FILE is set to {backup_file!r} but the file does not exist"
+            )
         if os.path.exists(self._key_backup_sentinel_path):
+            stored = open(self._key_backup_sentinel_path).read().strip()
+            current = self._compute_key_backup_fingerprint()
+            if stored != current:
+                raise RuntimeError(
+                    f"MATRIX_KEY_BACKUP_FILE or MATRIX_KEY_BACKUP_PASSPHRASE has changed "
+                    f"since the last import (or the sentinel predates fingerprint tracking). "
+                    f"Delete {self._key_backup_sentinel_path!r} to re-import."
+                )
             logger.debug("E2EE key backup already imported; skipping")
-            return
-        logger.info("Importing E2EE key backup from %s", self._config.matrix_key_backup_file)
-        await self._client.import_keys(
-            self._config.matrix_key_backup_file,
-            self._config.matrix_key_backup_passphrase,
-        )
+            return False
+        logger.info("Importing E2EE key backup from %s", backup_file)
+        await self._client.import_keys(backup_file, self._config.matrix_key_backup_passphrase)
         try:
             with open(self._key_backup_sentinel_path, "w") as f:
-                f.write("")
+                f.write(self._compute_key_backup_fingerprint())
         except Exception:
             logger.exception(
                 "Failed to write key backup sentinel; import will run again on next start"
             )
         logger.info("E2EE key backup imported successfully")
+        return True
 
     @property
     def _backfill_sentinel_path(self) -> str:

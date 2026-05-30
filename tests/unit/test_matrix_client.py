@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import pytest
 import inspect
@@ -520,50 +521,63 @@ def _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispat
     return c
 
 
-def _write_key_file(tmp_path) -> str:
+def _write_key_file(tmp_path, content=KEY_CONTENT) -> str:
     key_file = tmp_path / "keys.txt"
-    key_file.write_text(KEY_CONTENT)
+    key_file.write_text(content)
     return str(key_file)
 
 
-async def test_import_key_backup_noop_when_file_empty(
+def _fingerprint(key_file: str, passphrase: str = "secret") -> str:
+    h = hashlib.sha256()
+    with open(key_file, "rb") as f:
+        h.update(f.read())
+    h.update(passphrase.encode())
+    return h.hexdigest()
+
+
+async def test_import_key_backup_returns_false_when_file_empty(
     mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file="")
-    await c._import_key_backup()
+    result = await c._import_key_backup()
+    assert result is False
     mock_nio_client.import_keys.assert_not_called()
 
 
-async def test_import_key_backup_noop_when_sentinel_exists(
+async def test_import_key_backup_returns_false_when_sentinel_matches(
     mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     key_file = _write_key_file(tmp_path)
-    (tmp_path / "key_backup_imported").write_text("")
+    (tmp_path / "key_backup_imported").write_text(_fingerprint(key_file))
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file=key_file)
-    await c._import_key_backup()
+    result = await c._import_key_backup()
+    assert result is False
     mock_nio_client.import_keys.assert_not_called()
 
 
-async def test_import_key_backup_passes_file_path_and_passphrase(
+async def test_import_key_backup_returns_true_and_calls_import(
     mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     key_file = _write_key_file(tmp_path)
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file=key_file)
-    await c._import_key_backup()
+    result = await c._import_key_backup()
+    assert result is True
     mock_nio_client.import_keys.assert_called_once_with(key_file, "secret")
 
 
-async def test_import_key_backup_writes_sentinel_on_success(
+async def test_import_key_backup_writes_fingerprint_sentinel_on_success(
     mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     key_file = _write_key_file(tmp_path)
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file=key_file)
     await c._import_key_backup()
-    assert (tmp_path / "key_backup_imported").exists()
+    sentinel = tmp_path / "key_backup_imported"
+    assert sentinel.exists()
+    assert sentinel.read_text() == _fingerprint(key_file)
 
 
 async def test_import_key_backup_skips_sentinel_on_error(
@@ -576,3 +590,93 @@ async def test_import_key_backup_skips_sentinel_on_error(
     with pytest.raises(RuntimeError, match="bad passphrase"):
         await c._import_key_backup()
     assert not (tmp_path / "key_backup_imported").exists()
+
+
+async def test_import_key_backup_fails_if_file_missing(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client, key_file="/nonexistent/keys.txt")
+    with pytest.raises(FileNotFoundError, match="MATRIX_KEY_BACKUP_FILE"):
+        await c._import_key_backup()
+    mock_nio_client.import_keys.assert_not_called()
+
+
+async def test_import_key_backup_fails_if_sentinel_fingerprint_mismatch(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    key_file = _write_key_file(tmp_path)
+    (tmp_path / "key_backup_imported").write_text(_fingerprint(key_file, passphrase="old-pass"))
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client, key_file=key_file, passphrase="new-pass")
+    with pytest.raises(RuntimeError, match="MATRIX_KEY_BACKUP_FILE or MATRIX_KEY_BACKUP_PASSPHRASE has changed"):
+        await c._import_key_backup()
+    mock_nio_client.import_keys.assert_not_called()
+
+
+async def test_import_key_backup_fails_if_sentinel_empty(
+    mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    key_file = _write_key_file(tmp_path)
+    (tmp_path / "key_backup_imported").write_text("")
+    c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
+                            mock_nio_client, key_file=key_file)
+    with pytest.raises(RuntimeError, match="MATRIX_KEY_BACKUP_FILE or MATRIX_KEY_BACKUP_PASSPHRASE has changed"):
+        await c._import_key_backup()
+    mock_nio_client.import_keys.assert_not_called()
+
+
+# --- start(): backfill sentinel cleared after first key import ---
+
+def _make_start_helpers(tmp_path, mock_nio_client, vector_store, embedding_client,
+                        webhook_dispatcher, key_file=""):
+    """Return a client configured for start() tests with a key backup."""
+    cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
+    cfg.matrix_key_backup_file = key_file
+    cfg.matrix_key_backup_passphrase = "secret" if key_file else ""
+    c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
+    c._client = mock_nio_client
+    mock_nio_client.loaded_sync_token = "stored_t99"
+    mock_nio_client.sync.return_value = _make_initial_sync()
+    mock_nio_client.joined_rooms.return_value = MagicMock(rooms=[])
+    return c
+
+
+async def test_start_clears_backfill_sentinel_when_key_first_imported(
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    """When a key backup is imported for the first time and a completed backfill exists,
+    start() must clear the backfill sentinel so backfill re-runs and decrypts history."""
+    key_file = _write_key_file(tmp_path)
+    (tmp_path / "backfill_complete").write_text("")
+    # No key_backup_imported sentinel — this is the first run with a key.
+    c = _make_start_helpers(tmp_path, mock_nio_client, vector_store, embedding_client,
+                            webhook_dispatcher, key_file=key_file)
+    with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
+        create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+        await c.start()
+
+    # Backfill must have run (sync + joined_rooms called), not the fast restart path.
+    mock_nio_client.sync.assert_called_once()
+    mock_nio_client.joined_rooms.assert_called_once()
+
+
+async def test_start_does_not_clear_backfill_sentinel_for_same_key(
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    """Re-running with the same key backup (sentinel fingerprint matches) must NOT
+    trigger a re-backfill — start() should take the fast restart path."""
+    key_file = _write_key_file(tmp_path)
+    (tmp_path / "backfill_complete").write_text("")
+    (tmp_path / "key_backup_imported").write_text(_fingerprint(key_file))
+    c = _make_start_helpers(tmp_path, mock_nio_client, vector_store, embedding_client,
+                            webhook_dispatcher, key_file=key_file)
+    with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
+        create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+        await c.start()
+
+    # Fast restart path: no sync, no backfill.
+    mock_nio_client.sync.assert_not_called()
+    mock_nio_client.joined_rooms.assert_not_called()
+    mock_nio_client.sync_forever.assert_called_once_with(since="stored_t99", timeout=30000)
