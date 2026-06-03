@@ -16,6 +16,7 @@ def _make_config(
     backfill_limit=5,
     message_buffer_size=50,
     matrix_sync_timeout_ms=30000,
+    ignored_room_ids=frozenset(),
 ):
     cfg = MagicMock()
     cfg.matrix_homeserver_url = "https://matrix.example.org"
@@ -29,6 +30,7 @@ def _make_config(
     cfg.backfill_limit = backfill_limit
     cfg.message_buffer_size = message_buffer_size
     cfg.matrix_sync_timeout_ms = matrix_sync_timeout_ms
+    cfg.ignored_room_ids = ignored_room_ids
     return cfg
 
 
@@ -734,3 +736,113 @@ async def test_start_does_not_clear_backfill_sentinel_for_same_key(
     mock_nio_client.sync.assert_not_called()
     mock_nio_client.joined_rooms.assert_not_called()
     mock_nio_client.sync_forever.assert_called_once_with(since="stored_t99", timeout=30000)
+
+
+# --- ignored rooms ---
+
+def _make_two_room_sync(room_ids: list[str], prev_batch: str = "t1") -> MagicMock:
+    """Build a SyncResponse mock with a timeline entry for each room_id."""
+    sync = MagicMock(spec=nio.SyncResponse)
+    sync.next_batch = "next_batch_token"
+    join = {}
+    for rid in room_ids:
+        timeline = MagicMock()
+        timeline.prev_batch = prev_batch
+        room_info = MagicMock()
+        room_info.timeline = timeline
+        join[rid] = room_info
+    sync.rooms = MagicMock()
+    sync.rooms.join = join
+    return sync
+
+
+async def test_on_message_skips_ignored_room(client, mock_nio_client):
+    IGNORED = "!ignored:example.org"
+    client._config.ignored_room_ids = frozenset([IGNORED])
+    room = MagicMock()
+    room.room_id = IGNORED
+    event = _make_text_event()
+    client._save_pending_index = MagicMock()
+
+    await client._on_message(room, event)
+
+    assert len(client._buffer) == 0
+    client._vector_store.upsert.assert_not_called()
+
+
+async def test_on_message_allows_non_ignored_room(client, mock_nio_client):
+    client._config.ignored_room_ids = frozenset(["!other:example.org"])
+    room = MagicMock()
+    room.room_id = "!allowed:example.org"
+    event = _make_text_event()
+    client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+    client._save_pending_index = MagicMock()
+
+    await client._on_message(room, event)
+
+    assert len(client._buffer) == 1
+    client._vector_store.upsert.assert_called_once()
+
+
+async def test_backfill_skips_ignored_rooms(client, mock_nio_client):
+    IGNORED = "!ignored:example.org"
+    REAL = "!real:example.org"
+    client._config.ignored_room_ids = frozenset([IGNORED])
+
+    rooms_resp = MagicMock()
+    rooms_resp.rooms = [IGNORED, REAL]
+    mock_nio_client.joined_rooms = AsyncMock(return_value=rooms_resp)
+    mock_nio_client.room_messages = AsyncMock(
+        return_value=_make_room_messages_response([], end=None)
+    )
+
+    await client._backfill(_make_two_room_sync([IGNORED, REAL]))
+
+    assert mock_nio_client.room_messages.call_count == 1
+    assert mock_nio_client.room_messages.call_args.kwargs["room_id"] == REAL
+
+
+async def test_backfill_includes_all_when_ignored_rooms_empty(client, mock_nio_client):
+    ROOM1 = "!room1:example.org"
+    ROOM2 = "!room2:example.org"
+    client._config.ignored_room_ids = frozenset()
+
+    rooms_resp = MagicMock()
+    rooms_resp.rooms = [ROOM1, ROOM2]
+    mock_nio_client.joined_rooms = AsyncMock(return_value=rooms_resp)
+    mock_nio_client.room_messages = AsyncMock(
+        return_value=_make_room_messages_response([], end=None)
+    )
+
+    await client._backfill(_make_two_room_sync([ROOM1, ROOM2]))
+
+    assert mock_nio_client.room_messages.call_count == 2
+
+
+async def test_index_initial_sync_skips_ignored_rooms(client, mock_nio_client):
+    IGNORED = "!ignored:example.org"
+    REAL = "!real:example.org"
+    client._config.ignored_room_ids = frozenset([IGNORED])
+
+    ignored_event = _make_text_event("$ign:x", body="should not index")
+    real_event = _make_text_event("$real:x", body="should index")
+
+    sync = MagicMock(spec=nio.SyncResponse)
+    def _room_info(event):
+        ri = MagicMock()
+        ri.timeline = MagicMock()
+        ri.timeline.events = [event]
+        return ri
+
+    sync.rooms = MagicMock()
+    sync.rooms.join = {IGNORED: _room_info(ignored_event), REAL: _room_info(real_event)}
+
+    client._embedding_client.embed_batch = AsyncMock(return_value=[[0.1] * 1536])
+
+    await client._index_initial_sync(sync)
+
+    # Only the real room's message should have been indexed
+    assert client._embedding_client.embed_batch.call_count == 1
+    indexed_bodies = client._embedding_client.embed_batch.call_args.args[0]
+    assert "should index" in indexed_bodies
+    assert "should not index" not in indexed_bodies

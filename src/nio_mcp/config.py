@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from pydantic import field_validator, model_validator
+from pydantic import computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     mcp_session_timeout: int = 1800  # seconds; idle sessions are reaped after this long
     allow_send_message: bool = False  # set ALLOW_SEND_MESSAGE=true to enable
     http_auth_token: str = ""  # if set, require Bearer token in Authorization header
+    ignored_rooms: str = ""  # IGNORED_ROOMS env var: comma-separated room IDs to skip
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def ignored_room_ids(self) -> frozenset[str]:
+        return frozenset(r.strip() for r in self.ignored_rooms.split(",") if r.strip())
 
     @field_validator(
         "backfill_limit", "message_buffer_size", "matrix_sync_timeout_ms",

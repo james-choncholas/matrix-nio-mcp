@@ -413,8 +413,11 @@ class MatrixMCPClient:
         if not hasattr(initial_sync, "rooms") or not initial_sync.rooms:
             return
         joined = getattr(initial_sync.rooms, "join", {})
+        ignored = self._config.ignored_room_ids
         records: list[MessageRecord] = []
         for room_id, room_info in joined.items():
+            if room_id in ignored:
+                continue
             timeline = getattr(room_info, "timeline", None)
             if timeline is None:
                 continue
@@ -431,7 +434,8 @@ class MatrixMCPClient:
 
     async def _backfill(self, initial_sync: SyncResponse) -> None:
         rooms_response: JoinedRoomsResponse = await self._client.joined_rooms()
-        room_ids = rooms_response.rooms if hasattr(rooms_response, "rooms") else []
+        ignored = self._config.ignored_room_ids
+        room_ids = [r for r in (rooms_response.rooms if hasattr(rooms_response, "rooms") else []) if r not in ignored]
 
         # Min-heap of (timestamp, event_id, record): keeps only the buffer_size
         # most recent records in memory while all records are indexed to the vector store.
@@ -501,6 +505,8 @@ class MatrixMCPClient:
         logger.info("Backfilled %d messages from room %s (%d pages)", fetched, room_id, page)
 
     async def _on_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
+        if room.room_id in self._config.ignored_room_ids:
+            return
         if event.event_id in self._seen_event_ids:
             return
         self._seen_event_ids.add(event.event_id)

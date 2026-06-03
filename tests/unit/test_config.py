@@ -128,3 +128,36 @@ def test_key_backup_neither_set_is_valid(monkeypatch):
     s = _make_settings(monkeypatch)
     assert s.matrix_key_backup_file == ""
     assert s.matrix_key_backup_passphrase == ""
+
+
+# --- IGNORED_ROOMS ---
+
+def test_ignored_rooms_default_is_empty(monkeypatch):
+    s = _make_settings(monkeypatch)
+    assert s.ignored_room_ids == frozenset()
+
+
+def test_ignored_rooms_unset_env_is_empty(monkeypatch):
+    monkeypatch.delenv("IGNORED_ROOMS", raising=False)
+    s = _make_settings(monkeypatch)
+    assert s.ignored_room_ids == frozenset()
+
+
+def test_ignored_rooms_empty_string_is_empty(monkeypatch):
+    s = _make_settings(monkeypatch, {"IGNORED_ROOMS": ""})
+    assert s.ignored_room_ids == frozenset()
+
+
+def test_ignored_rooms_single_entry(monkeypatch):
+    s = _make_settings(monkeypatch, {"IGNORED_ROOMS": "!abc:example.org"})
+    assert s.ignored_room_ids == frozenset({"!abc:example.org"})
+
+
+def test_ignored_rooms_comma_separated(monkeypatch):
+    s = _make_settings(monkeypatch, {"IGNORED_ROOMS": "!abc:example.org,!def:example.org"})
+    assert s.ignored_room_ids == frozenset({"!abc:example.org", "!def:example.org"})
+
+
+def test_ignored_rooms_trims_whitespace(monkeypatch):
+    s = _make_settings(monkeypatch, {"IGNORED_ROOMS": " !abc:example.org , !def:example.org "})
+    assert s.ignored_room_ids == frozenset({"!abc:example.org", "!def:example.org"})

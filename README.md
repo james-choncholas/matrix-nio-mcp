@@ -60,6 +60,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `MCP_PORT` | no | `8000` | Port for the HTTP server; MCP at `/mcp`, Matrix event SSE at `/events`, health at `/health` |
 | `HTTP_AUTH_TOKEN` | no | — | If set, requires `Authorization: Bearer <token>` for all endpoints |
 | `ALLOW_SEND_MESSAGE` | no | `false` | Set to `true` to enable the `send_message` tool |
+| `IGNORED_ROOMS` | no | — | Comma-separated list of Matrix room IDs to exclude from indexing, backfill, and live sync (e.g. `!abc:example.org,!def:example.org`); leave empty to include all rooms |
 
 > **Changing `EMBEDDING_MODEL` or `EMBEDDING_VECTOR_SIZE`** requires wiping the Qdrant collection and re-syncing from scratch. The collection is created at startup with the configured vector size; vectors already stored at a different dimension will cause Qdrant errors that cannot be recovered without dropping the collection. To reset: stop the server, delete the Qdrant collection (or point `QDRANT_COLLECTION` at a new name), delete `MATRIX_STORE_PATH/backfill_complete`, then restart.
 
