@@ -8,6 +8,7 @@ import nio_mcp.server as server_module
 RECORD = MessageRecord(
     event_id="$evt:example.org",
     room_id="!room:example.org",
+    room_name="Test Room",
     sender="@alice:example.org",
     sender_name="Alice",
     body="Hello world",

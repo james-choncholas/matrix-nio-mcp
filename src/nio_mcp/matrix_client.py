@@ -515,6 +515,7 @@ class MatrixMCPClient:
         record = MessageRecord(
             event_id=event.event_id,
             room_id=room.room_id,
+            room_name=room.display_name or room.room_id,
             sender=event.sender,
             sender_name=sender_name,
             body=event.body,
@@ -570,6 +571,13 @@ class MatrixMCPClient:
             return sender[1:sender.index(":")]
         return sender
 
+    def _resolve_room_name(self, room_id: str) -> str:
+        if self._client:
+            room = self._client.rooms.get(room_id)
+            if room and room.display_name:
+                return room.display_name
+        return room_id
+
     def get_room_info(self, room_id: str) -> dict:
         if self._client is None:
             raise RuntimeError("Client not started")
@@ -602,6 +610,7 @@ class MatrixMCPClient:
         return MessageRecord(
             event_id=event.event_id,
             room_id=room_id,
+            room_name=self._resolve_room_name(room_id),
             sender=event.sender,
             sender_name=self._resolve_display_name(room_id, event.sender),
             body=body,

@@ -58,11 +58,11 @@ async def list_tools() -> list[types.Tool]:
             name="search_messages",
             description=(
                 "Search indexed Matrix messages. Provide a natural-language query for semantic "
-                "similarity search, a sender name or MXID to narrow results, after_ts/before_ts "
-                "(Unix ms) to filter by time, or any combination of those. If no query is "
-                "provided, returns up to limit messages in reverse chronological order by "
-                "timestamp (no similarity score). At least one of query, sender, after_ts, or "
-                "before_ts must be provided."
+                "similarity search, a sender name or MXID to narrow results, a room name to "
+                "filter by room, after_ts/before_ts (Unix ms) to filter by time, or any "
+                "combination of those. If no query is provided, returns up to limit messages in "
+                "reverse chronological order by timestamp (no similarity score). At least one of "
+                "query, sender, room, after_ts, or before_ts must be provided."
             ),
             inputSchema={
                 "type": "object",
@@ -71,6 +71,10 @@ async def list_tools() -> list[types.Tool]:
                     "sender": {
                         "type": "string",
                         "description": "Sender name or MXID. Full MXIDs (@alice:example.org) are matched exactly; short names ('alice') use fuzzy word search against the sender's MXID, display name, and localpart.",
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "Room display name or partial name (e.g. 'tech support'). Uses fuzzy word search against the room's display name.",
                     },
                     "limit": {"type": "integer", "default": 10, "description": "Max results"},
                     "after_ts": {"type": "integer", "description": "Only return messages after this timestamp (Unix milliseconds)"},
@@ -148,12 +152,13 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         if name == "search_messages":
             query = arguments.get("query", "").strip()
             sender = arguments.get("sender", "").strip()
+            room = arguments.get("room", "").strip()
             limit = arguments.get("limit", 10)
             after_ts = arguments.get("after_ts")
             before_ts = arguments.get("before_ts")
 
-            if not query and not sender and after_ts is None and before_ts is None:
-                return _json_response({"error": "Provide at least one of: query, sender, after_ts, before_ts"})
+            if not query and not sender and not room and after_ts is None and before_ts is None:
+                return _json_response({"error": "Provide at least one of: query, sender, room, after_ts, before_ts"})
 
             settings = get_settings()
             vector_store = VectorStore(
@@ -174,6 +179,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     vector,
                     limit=limit,
                     sender_query=sender or None,
+                    room_query=room or None,
                     after_ts=after_ts,
                     before_ts=before_ts,
                 )
@@ -181,6 +187,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 results = await vector_store.scroll(
                     limit=limit,
                     sender_query=sender or None,
+                    room_query=room or None,
                     after_ts=after_ts,
                     before_ts=before_ts,
                 )

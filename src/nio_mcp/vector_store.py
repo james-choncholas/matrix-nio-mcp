@@ -43,6 +43,42 @@ def _sender_search_text(sender: str, sender_name: str) -> str:
     return " ".join(values)
 
 
+def _room_search_text(room_name: str) -> str:
+    return room_name.strip()
+
+
+def _room_query_terms(room_query: str) -> list[str]:
+    normalized = room_query.strip().casefold()
+    if not normalized:
+        return []
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term in normalized.split(" "):
+        if not term or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def _fuzzy_room_min_should(
+    room_query: str, match_count: int
+) -> Optional[qmodels.MinShould]:
+    terms = _room_query_terms(room_query)
+    if not terms:
+        return None
+    conditions = [
+        qmodels.FieldCondition(key="room_search", match=qmodels.MatchText(text=term))
+        for term in terms
+    ]
+    return qmodels.MinShould(
+        conditions=conditions,
+        min_count=max(1, min(match_count, len(conditions))),
+    )
+
+
 def _sender_query_terms(sender_query: str) -> list[str]:
     normalized = sender_query.strip().casefold()
     if not normalized:
@@ -135,6 +171,15 @@ class VectorStore:
                 lowercase=True,
             ),
         )
+        await self._client.create_payload_index(
+            collection_name=self._collection,
+            field_name="room_search",
+            field_schema=qmodels.TextIndexParams(
+                type=qmodels.TextIndexType.TEXT,
+                tokenizer=qmodels.TokenizerType.WORD,
+                lowercase=True,
+            ),
+        )
 
     async def upsert(self, record: MessageRecord, vector: list[float]) -> None:
         point = qmodels.PointStruct(
@@ -143,6 +188,8 @@ class VectorStore:
             payload={
                 "event_id": record.event_id,
                 "room_id": record.room_id,
+                "room_name": record.room_name,
+                "room_search": _room_search_text(record.room_name),
                 "sender": record.sender,
                 "sender_name": record.sender_name,
                 "sender_search": _sender_search_text(record.sender, record.sender_name),
@@ -162,10 +209,12 @@ class VectorStore:
         sender: Optional[str] = None,
         sender_query: Optional[str] = None,
         sender_match_count: Optional[int] = None,
+        room_query: Optional[str] = None,
+        room_match_count: Optional[int] = None,
         after_ts: Optional[int] = None,
         before_ts: Optional[int] = None,
     ) -> Optional[qmodels.Filter]:
-        conditions: list[qmodels.FieldCondition] = []
+        conditions: list = []
         min_should: Optional[qmodels.MinShould] = None
         if room_id:
             conditions.append(_room_condition(room_id))
@@ -180,6 +229,15 @@ class VectorStore:
             else:
                 count = sender_match_count or len(_sender_query_terms(stripped))
                 min_should = _fuzzy_sender_min_should(stripped, count)
+        if room_query:
+            count = room_match_count or len(_room_query_terms(room_query.strip()))
+            room_ms = _fuzzy_room_min_should(room_query.strip(), count)
+            if room_ms:
+                if min_should is None:
+                    min_should = room_ms
+                else:
+                    # Both sender and room are fuzzy: nest room as a must condition
+                    conditions.append(qmodels.Filter(min_should=room_ms))
 
         if not conditions and min_should is None:
             return None
@@ -190,51 +248,42 @@ class VectorStore:
         room_id: Optional[str] = None,
         sender: Optional[str] = None,
         sender_query: Optional[str] = None,
+        room_query: Optional[str] = None,
         after_ts: Optional[int] = None,
         before_ts: Optional[int] = None,
     ) -> list[Optional[qmodels.Filter]]:
-        if not sender_query or _looks_like_mxid(sender_query.strip()):
-            return [
-                self._build_filter(
+        # Build fallback count sequences: strict (all terms) first, then any-one-term.
+        if sender_query and not _looks_like_mxid(sender_query.strip()):
+            s_terms = _sender_query_terms(sender_query)
+            sender_counts: list[Optional[int]] = [len(s_terms), 1] if len(s_terms) > 1 else [None]
+        else:
+            sender_counts = [None]
+
+        if room_query:
+            r_terms = _room_query_terms(room_query)
+            room_counts: list[Optional[int]] = [len(r_terms), 1] if len(r_terms) > 1 else [1]
+        else:
+            room_counts = [None]
+
+        filters: list[Optional[qmodels.Filter]] = []
+        seen: set[str] = set()
+        for s_count in sender_counts:
+            for r_count in room_counts:
+                f = self._build_filter(
                     room_id=room_id,
                     sender=sender,
                     sender_query=sender_query,
+                    sender_match_count=s_count,
+                    room_query=room_query,
+                    room_match_count=r_count,
                     after_ts=after_ts,
                     before_ts=before_ts,
                 )
-            ]
-
-        terms = _sender_query_terms(sender_query)
-        if len(terms) <= 1:
-            return [
-                self._build_filter(
-                    room_id=room_id,
-                    sender=sender,
-                    sender_query=sender_query,
-                    sender_match_count=1,
-                    after_ts=after_ts,
-                    before_ts=before_ts,
-                )
-            ]
-
-        return [
-            self._build_filter(
-                room_id=room_id,
-                sender=sender,
-                sender_query=sender_query,
-                sender_match_count=len(terms),
-                after_ts=after_ts,
-                before_ts=before_ts,
-            ),
-            self._build_filter(
-                room_id=room_id,
-                sender=sender,
-                sender_query=sender_query,
-                sender_match_count=1,
-                after_ts=after_ts,
-                before_ts=before_ts,
-            ),
-        ]
+                key = repr(f)
+                if key not in seen:
+                    seen.add(key)
+                    filters.append(f)
+        return filters
 
     @staticmethod
     def _results_from_hits(hits, default_score: float = 0.0) -> list[SearchResult]:
@@ -301,6 +350,25 @@ class VectorStore:
 
         return results
 
+    async def _merge_scrolls(
+        self,
+        filters: list[Optional[qmodels.Filter]],
+        limit: int,
+    ) -> list[SearchResult]:
+        results: list[SearchResult] = []
+        seen_event_ids: set[str] = set()
+
+        for scroll_filter in filters:
+            hits = await self._scroll_once(limit, scroll_filter)
+            for hit in hits:
+                if hit.event_id in seen_event_ids:
+                    continue
+                seen_event_ids.add(hit.event_id)
+                results.append(hit)
+
+        results.sort(key=lambda result: result.timestamp, reverse=True)
+        return results[:limit]
+
     async def search(
         self,
         vector: list[float],
@@ -308,10 +376,11 @@ class VectorStore:
         room_id: Optional[str] = None,
         sender: Optional[str] = None,
         sender_query: Optional[str] = None,
+        room_query: Optional[str] = None,
         after_ts: Optional[int] = None,
         before_ts: Optional[int] = None,
     ) -> list[SearchResult]:
-        filters = self._candidate_filters(room_id, sender, sender_query, after_ts, before_ts)
+        filters = self._candidate_filters(room_id, sender, sender_query, room_query, after_ts, before_ts)
         return await self._merge_searches(
             filters,
             lambda current_limit, query_filter: self._search_once(vector, current_limit, query_filter),
@@ -342,11 +411,12 @@ class VectorStore:
         room_id: Optional[str] = None,
         sender: Optional[str] = None,
         sender_query: Optional[str] = None,
+        room_query: Optional[str] = None,
         after_ts: Optional[int] = None,
         before_ts: Optional[int] = None,
     ) -> list[SearchResult]:
-        filters = self._candidate_filters(room_id, sender, sender_query, after_ts, before_ts)
-        return await self._merge_searches(filters, self._scroll_once, limit)
+        filters = self._candidate_filters(room_id, sender, sender_query, room_query, after_ts, before_ts)
+        return await self._merge_scrolls(filters, limit)
 
     async def close(self) -> None:
         await self._client.close()

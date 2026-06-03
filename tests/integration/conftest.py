@@ -309,6 +309,7 @@ def make_matrix_config(tmp_path):
             backfill_pages_max=backfill_pages_max,
             message_buffer_size=message_buffer_size,
             matrix_sync_timeout_ms=matrix_sync_timeout_ms,
+            ignored_room_ids=set(),
         )
 
     return factory

@@ -10,6 +10,7 @@ from nio_mcp.models import MessageRecord
 RECORD = MessageRecord(
     event_id="$abc:example.org",
     room_id="!room:example.org",
+    room_name="Test Room",
     sender="@alice:example.org",
     sender_name="Alice",
     body="Hello",

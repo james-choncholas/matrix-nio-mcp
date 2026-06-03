@@ -5,6 +5,7 @@ from dataclasses import dataclass, asdict
 class MessageRecord:
     event_id: str
     room_id: str
+    room_name: str
     sender: str
     sender_name: str
     body: str

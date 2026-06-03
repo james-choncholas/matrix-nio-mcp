@@ -19,6 +19,7 @@ def make_record(i: int, room_id: str = "!room:x", sender: str = "@alice:x") -> M
     return MessageRecord(
         event_id=f"$event{i}:example.org",
         room_id=room_id,
+        room_name="Test Room",
         sender=sender,
         sender_name=sender.split(":")[0].lstrip("@"),
         body=f"message number {i}",
@@ -157,6 +158,7 @@ async def test_search_with_sender_query_matches_alias_variants(store):
     r1 = MessageRecord(
         event_id="$event_alias_1:example.org",
         room_id="!room:x",
+        room_name="Test Room",
         sender=shared_sender,
         sender_name="Fred Flintstone",
         body="meeting notes",
@@ -165,6 +167,7 @@ async def test_search_with_sender_query_matches_alias_variants(store):
     r2 = MessageRecord(
         event_id="$event_alias_2:example.org",
         room_id="!room:x",
+        room_name="Test Room",
         sender=shared_sender,
         sender_name="fred",
         body="follow up",
@@ -173,6 +176,7 @@ async def test_search_with_sender_query_matches_alias_variants(store):
     r3 = MessageRecord(
         event_id="$event_alias_3:example.org",
         room_id="!room:x",
+        room_name="Test Room",
         sender="@barney:x",
         sender_name="Barney Rubble",
         body="different sender",
@@ -198,6 +202,7 @@ async def test_scroll_with_sender_query_returns_matching_sender(store):
     r1 = MessageRecord(
         event_id="$event_scroll_1:example.org",
         room_id="!room:x",
+        room_name="Test Room",
         sender="@fred:x",
         sender_name="Fred Flintstone",
         body="latest message",
@@ -206,6 +211,7 @@ async def test_scroll_with_sender_query_returns_matching_sender(store):
     r2 = MessageRecord(
         event_id="$event_scroll_2:example.org",
         room_id="!room:x",
+        room_name="Test Room",
         sender="@barney:x",
         sender_name="Barney Rubble",
         body="other sender",
