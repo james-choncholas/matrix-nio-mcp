@@ -7,6 +7,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for [Matrix](
 - **`get_recent_messages`** — fetch the most recent messages across all joined rooms, with optional filtering by exact MXID sender or room
 - **`search_messages`** — search indexed message history by semantic similarity (OpenAI embeddings + cosine similarity), fuzzy sender name, time range, or any combination
 - **`get_message_context`** — retrieve messages surrounding a specific event (useful after a search hit)
+- **`get_room_info`** — return the friendly display name and full member list (MXID + display name) for a room
 - **`send_message`** — send a text message to any joined room
 - **Webhooks** — POST to a configurable URL and/or stream events via SSE whenever a new message arrives
 - **E2EE support** — works with encrypted rooms via libolm
@@ -138,6 +139,29 @@ Fetches messages before and after a specific event via the Matrix `/context` end
   "event_id": "$found_event:example.org",
   "before": 5,
   "after": 5
+}
+```
+
+### `get_room_info`
+
+Returns the friendly display name and full member list for a room, read from nio's in-memory room state populated during initial sync.
+
+```json
+{
+  "room_id": "!abc123:example.org"
+}
+```
+
+Returns:
+
+```json
+{
+  "room_id": "!abc123:example.org",
+  "name": "My Room",
+  "members": [
+    {"user_id": "@alice:example.org", "display_name": "Alice"},
+    {"user_id": "@bob:example.org", "display_name": "Bob"}
+  ]
 }
 ```
 

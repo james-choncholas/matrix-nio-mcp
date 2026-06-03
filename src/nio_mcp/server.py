@@ -96,6 +96,22 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
     ]
+    tools.append(
+        types.Tool(
+            name="get_room_info",
+            description=(
+                "Return the friendly name and member list for a Matrix room. "
+                "Each member includes their MXID and display name."
+            ),
+            inputSchema={
+                "type": "object",
+                "required": ["room_id"],
+                "properties": {
+                    "room_id": {"type": "string", "description": "Room ID (e.g. !roomid:example.org)"},
+                },
+            },
+        )
+    )
     if settings.allow_send_message:
         tools.append(
             types.Tool(
@@ -187,6 +203,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                 before=arguments.get("before", 5),
                 after=arguments.get("after", 5),
             )
+            return _json_response(result)
+
+        if name == "get_room_info":
+            result = matrix_client.get_room_info(room_id=arguments["room_id"])
             return _json_response(result)
 
         return _json_response({"error": f"Unknown tool: {name}"})

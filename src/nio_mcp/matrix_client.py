@@ -564,6 +564,22 @@ class MatrixMCPClient:
             return sender[1:sender.index(":")]
         return sender
 
+    def get_room_info(self, room_id: str) -> dict:
+        if self._client is None:
+            raise RuntimeError("Client not started")
+        room = self._client.rooms.get(room_id)
+        if room is None:
+            return {"error": f"Room {room_id} not found"}
+        members = [
+            {"mxid": mxid, "display_name": member.display_name or self._sender_display_name(mxid)}
+            for mxid, member in room.users.items()
+        ]
+        return {
+            "room_id": room_id,
+            "name": room.display_name,
+            "members": members,
+        }
+
     def _resolve_display_name(self, room_id: str, sender: str) -> str:
         if self._client:
             room = self._client.rooms.get(room_id)

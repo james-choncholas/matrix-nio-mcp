@@ -489,6 +489,60 @@ async def test_get_recent_messages_filters_by_room(client):
     assert len(results) == 1
 
 
+# --- get_room_info ---
+
+def _make_member(display_name=None):
+    m = MagicMock()
+    m.display_name = display_name
+    return m
+
+
+def test_get_room_info_returns_name_and_members(client, mock_nio_client):
+    room = MagicMock()
+    room.display_name = "General"
+    room.users = {
+        "@alice:example.org": _make_member("Alice"),
+        "@bob:example.org": _make_member("Bob"),
+    }
+    mock_nio_client.rooms = {"!room:example.org": room}
+
+    result = client.get_room_info("!room:example.org")
+
+    assert result["room_id"] == "!room:example.org"
+    assert result["name"] == "General"
+    assert len(result["members"]) == 2
+    mxids = {m["mxid"] for m in result["members"]}
+    assert mxids == {"@alice:example.org", "@bob:example.org"}
+    names = {m["display_name"] for m in result["members"]}
+    assert names == {"Alice", "Bob"}
+
+
+def test_get_room_info_falls_back_to_localpart_when_display_name_missing(client, mock_nio_client):
+    room = MagicMock()
+    room.display_name = "Quiet Room"
+    room.users = {"@carol:example.org": _make_member(None)}
+    mock_nio_client.rooms = {"!q:example.org": room}
+
+    result = client.get_room_info("!q:example.org")
+
+    assert result["members"][0]["mxid"] == "@carol:example.org"
+    assert result["members"][0]["display_name"] == "carol"
+
+
+def test_get_room_info_returns_error_for_unknown_room(client, mock_nio_client):
+    mock_nio_client.rooms = {}
+
+    result = client.get_room_info("!unknown:example.org")
+
+    assert "error" in result
+
+
+def test_get_room_info_raises_when_client_not_started(client):
+    client._client = None
+    with pytest.raises(RuntimeError, match="Client not started"):
+        client.get_room_info("!room:example.org")
+
+
 # --- send_message ---
 
 async def test_send_message_calls_room_send(client, mock_nio_client):

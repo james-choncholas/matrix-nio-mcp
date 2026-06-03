@@ -15,6 +15,16 @@ RECORD = MessageRecord(
 )
 
 
+ROOM_INFO = {
+    "room_id": "!room:example.org",
+    "name": "Test Room",
+    "members": [
+        {"mxid": "@alice:example.org", "display_name": "Alice"},
+        {"mxid": "@bob:example.org", "display_name": "bob"},
+    ],
+}
+
+
 @pytest.fixture(autouse=True)
 def mock_matrix_client():
     client = AsyncMock()
@@ -23,6 +33,7 @@ def mock_matrix_client():
     client.get_message_context = AsyncMock(
         return_value={"event": RECORD.to_dict(), "before": [], "after": []}
     )
+    client.get_room_info = MagicMock(return_value=ROOM_INFO)
     server_module.app.state.matrix_client = client
     yield client
     server_module.app.state.matrix_client = None
@@ -167,6 +178,14 @@ async def test_get_message_context_delegates_to_client(mock_matrix_client):
         room_id="!r:x", event_id="$e:x", before=3, after=3
     )
     assert "event" in data
+
+
+async def test_get_room_info_delegates_to_client(mock_matrix_client):
+    data = await _call("get_room_info", {"room_id": "!room:example.org"})
+    mock_matrix_client.get_room_info.assert_called_once_with(room_id="!room:example.org")
+    assert data["room_id"] == "!room:example.org"
+    assert data["name"] == "Test Room"
+    assert len(data["members"]) == 2
 
 
 async def test_unknown_tool_returns_error(mock_matrix_client):

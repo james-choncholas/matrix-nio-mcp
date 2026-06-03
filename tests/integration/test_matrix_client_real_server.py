@@ -256,6 +256,37 @@ async def test_pending_index_replays_after_restart(
         await _stop_client(client_two, dispatcher_two)
 
 
+async def test_get_room_info_returns_room_name_and_members(
+    matrix_api,
+    make_matrix_config,
+    make_vector_store,
+    make_matrix_client,
+):
+    alice = await matrix_api.register_user("alice", display_name="Alice")
+    bot = await matrix_api.register_user("bot", display_name="Bot")
+    room_id = await matrix_api.create_room(alice, name="Info Room")
+    await matrix_api.invite_and_join(room_id, alice, bot)
+
+    vector_store = await make_vector_store()
+    config = make_matrix_config(bot)
+    client, _embedder, dispatcher = make_matrix_client(config, vector_store)
+
+    try:
+        await client.start()
+
+        result = client.get_room_info(room_id)
+
+        assert result["room_id"] == room_id
+        assert result["name"] == "Info Room"
+        member_mxids = {m["mxid"] for m in result["members"]}
+        assert alice.user_id in member_mxids
+        assert bot.user_id in member_mxids
+        alice_member = next(m for m in result["members"] if m["mxid"] == alice.user_id)
+        assert alice_member["display_name"] == "Alice"
+    finally:
+        await _stop_client(client, dispatcher)
+
+
 async def test_send_message_and_get_message_context_against_real_server(
     matrix_api,
     make_matrix_config,
