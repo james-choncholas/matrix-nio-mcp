@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from nio_mcp.store import MessageStore
 from tests.integration.conftest import (
     FakeEmbeddingClient,
     skip_if_no_matrix,
@@ -155,8 +156,12 @@ async def test_restart_resumes_from_stored_token_without_buffer_duplicates(
     finally:
         await _stop_client(client_one, dispatcher_one)
 
-    assert os.path.exists(os.path.join(config.matrix_store_path, "backfill_complete"))
-    assert os.path.exists(os.path.join(config.matrix_store_path, "buffer.json"))
+    db_path = os.path.join(config.matrix_store_path, "nio_mcp.db")
+    assert os.path.exists(db_path)
+    _store = MessageStore(db_path)
+    _store.open()
+    assert _store.get_meta("backfill_complete") is not None
+    _store.close()
 
     for index in range(2):
         event_id = await matrix_api.send_text(room_id, alice, f"offline message {index}")
@@ -215,9 +220,8 @@ async def test_pending_index_replays_after_restart(
         event_id = await matrix_api.send_text(room_id, alice, "pending retry message")
 
         async def pending_journal_contains_event():
-            if event_id in client_one._pending_index:
-                return True
-            return False
+            pending = client_one._store.get_pending_messages()
+            return any(r.event_id == event_id for r in pending)
 
         await wait_until(
             pending_journal_contains_event,
@@ -228,10 +232,12 @@ async def test_pending_index_replays_after_restart(
     finally:
         await _stop_client(client_one, dispatcher_one)
 
-    pending_path = os.path.join(config.matrix_store_path, "pending_index.json")
-    with open(pending_path) as pending_file:
-        pending_data = json.load(pending_file)
-    assert event_id in pending_data
+    db_path = os.path.join(config.matrix_store_path, "nio_mcp.db")
+    _store = MessageStore(db_path)
+    _store.open()
+    pending = _store.get_pending_messages()
+    assert any(r.event_id == event_id for r in pending)
+    _store.close()
 
     client_two, _embedder_two, dispatcher_two = make_matrix_client(config, vector_store)
     try:
@@ -245,8 +251,7 @@ async def test_pending_index_replays_after_restart(
         assert replayed.sender_name == "Alice"
 
         async def pending_journal_cleared():
-            with open(pending_path) as pending_file:
-                return json.load(pending_file) == {}
+            return len(client_two._store.get_pending_messages()) == 0
 
         await wait_until(
             pending_journal_cleared,

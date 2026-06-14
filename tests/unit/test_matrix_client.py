@@ -3,11 +3,11 @@ import hashlib
 import os
 import pytest
 import inspect
-from unittest.mock import AsyncMock, MagicMock, patch, call
-from collections import deque
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from nio_mcp.matrix_client import MatrixMCPClient
 from nio_mcp.models import MessageRecord
+from nio_mcp.store import MessageStore
 import nio
 
 
@@ -39,6 +39,15 @@ def _make_room_messages_response(chunk, end=None):
     resp.chunk = chunk
     resp.end = end
     return resp
+
+
+def _make_room(room_id="!room:example.org", display_name="Test Room"):
+    room = MagicMock()
+    room.room_id = room_id
+    room.display_name = display_name
+    room.users = {}
+    room.encrypted = False
+    return room
 
 
 def _make_text_event(event_id="$evt:example.org", sender="@alice:example.org", body="Hello"):
@@ -121,19 +130,23 @@ def webhook_dispatcher():
 
 
 @pytest.fixture
-def client(mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher):
+def client(mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path):
     cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
     c._client = mock_nio_client
-    return c
+    c._store.open()
+    yield c
+    c._store.close()
 
 
 # --- start() behaviour ---
 
 async def test_start_creates_store_dir_before_restore_login(
-    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
     call_order = []
 
     mock_makedirs.side_effect = lambda *a, **kw: call_order.append("makedirs")
@@ -151,14 +164,16 @@ async def test_start_creates_store_dir_before_restore_login(
             return MagicMock()
         mock_create.side_effect = _check_and_close
         await c.start()
+    c._store.close()
 
     assert call_order.index("makedirs") < call_order.index("restore_login")
 
 
 async def test_start_calls_restore_login_with_env_credentials(
-    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
     mock_nio_client.loaded_sync_token = None
     mock_nio_client.sync.return_value = _make_initial_sync()
     mock_nio_client.joined_rooms.return_value = MagicMock(rooms=[])
@@ -172,6 +187,7 @@ async def test_start_calls_restore_login_with_env_credentials(
             return MagicMock()
         mock_create.side_effect = _check_and_close
         await c.start()
+    c._store.close()
 
     mock_nio_client.restore_login.assert_called_once_with(
         user_id="@bot:example.org",
@@ -181,9 +197,10 @@ async def test_start_calls_restore_login_with_env_credentials(
 
 
 async def test_start_passes_initial_sync_next_batch_to_sync_forever(
-    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
     initial_sync = _make_initial_sync()
     mock_nio_client.loaded_sync_token = None
     mock_nio_client.sync.return_value = initial_sync
@@ -199,6 +216,7 @@ async def test_start_passes_initial_sync_next_batch_to_sync_forever(
 
         create_task.side_effect = close_coro
         await c.start()
+    c._store.close()
 
     mock_nio_client.sync_forever.assert_called_once_with(
         since=initial_sync.next_batch,
@@ -213,10 +231,13 @@ async def test_start_resumes_from_stored_token_on_restart(
     cfg.matrix_store_path = str(tmp_path)
     mock_nio_client.loaded_sync_token = "stored_t99"
 
-    # Create the sentinel so start() takes the restart path.
-    (tmp_path / "backfill_complete").write_text("")
-
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
+    # Pre-populate the DB so start() takes the restart path and _restore_rooms_to_client runs.
+    c._store.open()
+    c._store.set_meta("backfill_complete", "1")
+    c._store.upsert_room("!general:example.org", "General", encrypted=False)
+    c._store.close()
+
     with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
         def capture_and_close(coro):
             if not inspect.iscoroutine(coro):
@@ -226,6 +247,7 @@ async def test_start_resumes_from_stored_token_on_restart(
 
         create_task.side_effect = capture_and_close
         await c.start()
+    c._store.close()
 
     # On restart: skip initial sync and backfill entirely
     mock_nio_client.sync.assert_not_called()
@@ -233,6 +255,41 @@ async def test_start_resumes_from_stored_token_on_restart(
     # sync_forever must be started from the stored token
     assert create_task.called
     mock_nio_client.sync_forever.assert_called_once_with(since="stored_t99", timeout=30000)
+
+
+async def test_start_restart_with_persisted_room_does_not_crash_and_send_message_works(
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    """_restore_rooms_to_client must not set name/display_name on MatrixRoom (read-only
+    property).  The room only needs to be present in client.rooms for send_message to work;
+    the DB remains the source of truth for human-readable labels."""
+    cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
+    mock_nio_client.loaded_sync_token = "stored_t99"
+
+    c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
+    c._store.open()
+    c._store.set_meta("backfill_complete", "1")
+    # Simulate a DM room whose display_name was derived from member names, not room.name.
+    c._store.upsert_room("!dm:example.org", "Alice", encrypted=False)
+    c._store.close()
+
+    with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
+        create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+        await c.start()  # must not raise AttributeError
+
+    restored = mock_nio_client.rooms.get("!dm:example.org")
+    assert restored is not None, "room must be in client.rooms after restart"
+    assert restored.name is None, "name must stay unset; DB is source of truth for labels"
+
+    # send_message must reach room_send without error
+    resp = MagicMock(spec=nio.RoomSendResponse)
+    resp.event_id = "$sent:x"
+    mock_nio_client.room_send = AsyncMock(return_value=resp)
+    result = await c.send_message("!dm:example.org", "hello")
+    assert result["event_id"] == "$sent:x"
+
+    c._store.close()
 
 
 # --- backfill pagination ---
@@ -244,8 +301,7 @@ async def test_backfill_room_stops_when_end_is_none(client, mock_nio_client):
     mock_nio_client.room_messages = AsyncMock(side_effect=[resp1, resp2])
     client._embedding_client.embed_batch = AsyncMock(return_value=[[0.1] * 1536, [0.2] * 1536])
 
-    async for _ in client._backfill_room("!room:example.org", "t0"):
-        pass
+    await client._backfill_room("!room:example.org", "t0")
     assert mock_nio_client.room_messages.call_count == 2
 
 
@@ -255,8 +311,7 @@ async def test_backfill_room_does_not_stop_on_empty_chunk_alone(client, mock_nio
     resp2 = _make_room_messages_response([], end=None)
     mock_nio_client.room_messages = AsyncMock(side_effect=[resp1, resp2])
 
-    async for _ in client._backfill_room("!room:example.org", "t0"):
-        pass
+    await client._backfill_room("!room:example.org", "t0")
     assert mock_nio_client.room_messages.call_count == 2
 
 
@@ -269,8 +324,7 @@ async def test_backfill_room_respects_pages_max(client, mock_nio_client):
     client._config.backfill_pages_max = 2
     client._embedding_client.embed_batch = AsyncMock(return_value=[[0.1] * 1536])
 
-    async for _ in client._backfill_room("!room:example.org", "t0"):
-        pass
+    await client._backfill_room("!room:example.org", "t0")
     assert mock_nio_client.room_messages.call_count == 2
 
 
@@ -288,138 +342,117 @@ async def test_backfill_room_unlimited_when_pages_max_zero(client, mock_nio_clie
         return_value=[[0.1] * 1536, [0.1] * 1536, [0.1] * 1536]
     )
 
-    async for _ in client._backfill_room("!room:example.org", "t0"):
-        pass
+    await client._backfill_room("!room:example.org", "t0")
     assert mock_nio_client.room_messages.call_count == 3
 
 
 # --- on_message callback ---
 
-async def test_on_message_adds_to_buffer_and_indexes(client, mock_nio_client):
-    room = MagicMock()
-    room.room_id = "!room:example.org"
+async def test_on_message_adds_to_store_and_indexes(client, mock_nio_client):
+    room = _make_room()
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
-    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
 
-    assert len(client._buffer) == 1
-    assert client._buffer[0].event_id == event.event_id
+    messages = client._store.get_recent_messages(10)
+    assert len(messages) == 1
+    assert messages[0].event_id == event.event_id
     client._vector_store.upsert.assert_called_once()
 
 
 async def test_on_message_deduplicates_event_ids(client):
-    room = MagicMock()
-    room.room_id = "!room:example.org"
+    room = _make_room()
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
-    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
     await client._on_message(room, event)
 
-    assert len(client._buffer) == 1
+    assert len(client._store.get_recent_messages(10)) == 1
     assert client._vector_store.upsert.call_count == 1
 
 
 async def test_on_message_clears_pending_on_success(client):
-    room = MagicMock()
-    room.room_id = "!room:example.org"
+    room = _make_room()
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
-    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
 
-    assert event.event_id not in client._pending_index
+    assert not client._store.get_pending_messages()
 
 
 async def test_on_message_retains_pending_on_index_failure(client):
-    room = MagicMock()
-    room.room_id = "!room:example.org"
+    room = _make_room()
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(side_effect=RuntimeError("openai down"))
-    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
 
-    assert event.event_id in client._pending_index
-    # message is still in buffer even though indexing failed
-    assert len(client._buffer) == 1
+    pending = client._store.get_pending_messages()
+    assert any(r.event_id == event.event_id for r in pending)
+    # message is in DB even though indexing failed
+    assert len(client._store.get_recent_messages(10)) == 1
 
 
 async def test_retry_pending_index_reindexes_and_clears(client):
     record = MessageRecord("$pend:x", "!r:x", "", "@a:x", "A", "lost msg", 1000)
-    client._pending_index = {record.event_id: record}
+    client._store.insert_message(record, indexed=False)
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
-    client._save_pending_index = MagicMock()
 
     await client._retry_pending_index()
 
     client._vector_store.upsert.assert_called_once()
-    assert record.event_id not in client._pending_index
-    assert record.event_id in client._seen_event_ids
-    assert any(r.event_id == record.event_id for r in client._buffer)
+    assert not client._store.get_pending_messages()
 
 
-async def test_retry_pending_index_skips_already_seen(client):
+async def test_retry_pending_index_is_idempotent(client):
     record = MessageRecord("$pend:x", "!r:x", "", "@a:x", "A", "lost msg", 1000)
-    client._pending_index = {record.event_id: record}
-    client._seen_event_ids.add(record.event_id)
-    client._buffer.append(record)
+    client._store.insert_message(record, indexed=False)
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
-    client._save_pending_index = MagicMock()
 
     await client._retry_pending_index()
+    await client._retry_pending_index()  # second call finds nothing pending
 
-    # should index exactly once; buffer should not have a duplicate
     client._vector_store.upsert.assert_called_once()
-    assert len([r for r in client._buffer if r.event_id == record.event_id]) == 1
 
 
 async def test_retry_pending_index_leaves_failures_pending(client):
     record = MessageRecord("$pend:x", "!r:x", "", "@a:x", "A", "lost msg", 1000)
-    client._pending_index = {record.event_id: record}
+    client._store.insert_message(record, indexed=False)
     client._embedding_client.embed = AsyncMock(side_effect=RuntimeError("qdrant down"))
-    client._save_pending_index = MagicMock()
 
     await client._retry_pending_index()
 
-    assert record.event_id in client._pending_index
+    pending = client._store.get_pending_messages()
+    assert any(r.event_id == record.event_id for r in pending)
 
 
 async def test_on_message_retains_pending_on_webhook_failure(client):
-    """Webhook failure must keep the record in the pending journal for retry."""
-    room = MagicMock()
-    room.room_id = "!room:example.org"
+    """Webhook failure must keep the record in the pending state for retry."""
+    room = _make_room()
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
     client._webhook_dispatcher.dispatch = AsyncMock(side_effect=RuntimeError("webhook down"))
-    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
 
-    assert event.event_id in client._pending_index
+    pending = client._store.get_pending_messages()
+    assert any(r.event_id == event.event_id for r in pending)
     # Qdrant upsert was still attempted before webhook
     client._vector_store.upsert.assert_called_once()
 
 
-async def test_on_message_defers_indexing_when_pre_save_fails(client):
-    """If the pre-index journal write fails, indexing must not run.
-
-    The record stays in _pending_index so the next successful write for any
-    event carries it to disk, giving it a restart-recovery path.
-    """
-    room = MagicMock()
-    room.room_id = "!room:example.org"
+async def test_on_message_defers_indexing_when_db_write_fails(client):
+    """If the DB write fails, indexing must not run."""
+    room = _make_room()
     event = _make_text_event()
-    client._save_pending_index = MagicMock(side_effect=OSError("disk full"))
+    client._store.insert_message = MagicMock(side_effect=OSError("disk full"))
 
     await client._on_message(room, event)
 
     client._vector_store.upsert.assert_not_called()
-    assert event.event_id in client._pending_index
 
 
 async def test_index_message_embeds_body_only(client):
@@ -445,47 +478,52 @@ async def test_batch_index_embeds_bodies_only(client):
     client._embedding_client.embed_batch.assert_called_once_with(["first body", "second body"])
 
 
-async def test_batch_index_failure_adds_records_to_pending_index(client):
+async def test_batch_index_failure_leaves_records_pending(client):
     records = [
         MessageRecord("$fail1:x", "!r:x", "", "@alice:x", "Alice", "msg1", 1000),
         MessageRecord("$fail2:x", "!r:x", "", "@bob:x", "Bob", "msg2", 1001),
     ]
     client._embedding_client.embed_batch = AsyncMock(side_effect=RuntimeError("openai down"))
-    client._save_pending_index = MagicMock()
 
     await client._batch_index(records)
 
-    assert "$fail1:x" in client._pending_index
-    assert "$fail2:x" in client._pending_index
-    client._save_pending_index.assert_called()
+    pending_ids = {r.event_id for r in client._store.get_pending_messages()}
+    assert "$fail1:x" in pending_ids
+    assert "$fail2:x" in pending_ids
 
 
 # --- get_recent_messages ---
 
-def _add_records(client, records):
-    for r in records:
-        client._buffer.append(r)
-
-
 async def test_get_recent_messages_returns_last_k(client):
     for i in range(10):
-        client._buffer.append(MessageRecord(f"$e{i}:x", "!r:x", "", "@a:x", "A", f"msg{i}", i))
+        client._store.insert_message(
+            MessageRecord(f"$e{i}:x", "!r:x", "", "@a:x", "A", f"msg{i}", i),
+            indexed=True,
+        )
     results = await client.get_recent_messages(k=3)
     assert len(results) == 3
     assert results[-1].body == "msg9"
 
 
 async def test_get_recent_messages_filters_by_sender(client):
-    client._buffer.append(MessageRecord("$1:x", "!r:x", "", "@alice:x", "Alice", "hi", 1))
-    client._buffer.append(MessageRecord("$2:x", "!r:x", "", "@bob:x", "Bob", "hey", 2))
+    client._store.insert_message(
+        MessageRecord("$1:x", "!r:x", "", "@alice:x", "Alice", "hi", 1), indexed=True
+    )
+    client._store.insert_message(
+        MessageRecord("$2:x", "!r:x", "", "@bob:x", "Bob", "hey", 2), indexed=True
+    )
     results = await client.get_recent_messages(k=10, sender="@alice:x")
     assert all(r.sender == "@alice:x" for r in results)
     assert len(results) == 1
 
 
 async def test_get_recent_messages_filters_by_room(client):
-    client._buffer.append(MessageRecord("$1:x", "!room1:x", "", "@a:x", "A", "hi", 1))
-    client._buffer.append(MessageRecord("$2:x", "!room2:x", "", "@a:x", "A", "hey", 2))
+    client._store.insert_message(
+        MessageRecord("$1:x", "!room1:x", "", "@a:x", "A", "hi", 1), indexed=True
+    )
+    client._store.insert_message(
+        MessageRecord("$2:x", "!room2:x", "", "@a:x", "A", "hey", 2), indexed=True
+    )
     results = await client.get_recent_messages(k=10, room_id="!room1:x")
     assert all(r.room_id == "!room1:x" for r in results)
     assert len(results) == 1
@@ -493,20 +531,10 @@ async def test_get_recent_messages_filters_by_room(client):
 
 # --- get_room_info ---
 
-def _make_member(display_name=None):
-    m = MagicMock()
-    m.display_name = display_name
-    return m
-
-
 def test_get_room_info_returns_name_and_members(client, mock_nio_client):
-    room = MagicMock()
-    room.display_name = "General"
-    room.users = {
-        "@alice:example.org": _make_member("Alice"),
-        "@bob:example.org": _make_member("Bob"),
-    }
-    mock_nio_client.rooms = {"!room:example.org": room}
+    client._store.upsert_room("!room:example.org", "General")
+    client._store.upsert_member("!room:example.org", "@alice:example.org", "Alice")
+    client._store.upsert_member("!room:example.org", "@bob:example.org", "Bob")
 
     result = client.get_room_info("!room:example.org")
 
@@ -520,10 +548,8 @@ def test_get_room_info_returns_name_and_members(client, mock_nio_client):
 
 
 def test_get_room_info_falls_back_to_localpart_when_display_name_missing(client, mock_nio_client):
-    room = MagicMock()
-    room.display_name = "Quiet Room"
-    room.users = {"@carol:example.org": _make_member(None)}
-    mock_nio_client.rooms = {"!q:example.org": room}
+    client._store.upsert_room("!q:example.org", "Quiet Room")
+    client._store.upsert_member("!q:example.org", "@carol:example.org", "carol")
 
     result = client.get_room_info("!q:example.org")
 
@@ -532,10 +558,7 @@ def test_get_room_info_falls_back_to_localpart_when_display_name_missing(client,
 
 
 def test_get_room_info_returns_error_for_unknown_room(client, mock_nio_client):
-    mock_nio_client.rooms = {}
-
     result = client.get_room_info("!unknown:example.org")
-
     assert "error" in result
 
 
@@ -573,6 +596,7 @@ def _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispat
     cfg.matrix_key_backup_file = key_file
     cfg.matrix_key_backup_passphrase = passphrase
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
+    c._store.open()
     c._client = mock_nio_client
     return c
 
@@ -599,18 +623,20 @@ async def test_import_key_backup_returns_false_when_file_empty(
     result = await c._import_key_backup()
     assert result is False
     mock_nio_client.import_keys.assert_not_called()
+    c._store.close()
 
 
 async def test_import_key_backup_returns_false_when_sentinel_matches(
     mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     key_file = _write_key_file(tmp_path)
-    (tmp_path / "key_backup_imported").write_text(_fingerprint(key_file))
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file=key_file)
+    c._store.set_meta("key_backup_imported", _fingerprint(key_file))
     result = await c._import_key_backup()
     assert result is False
     mock_nio_client.import_keys.assert_not_called()
+    c._store.close()
 
 
 async def test_import_key_backup_returns_true_and_calls_import(
@@ -622,6 +648,7 @@ async def test_import_key_backup_returns_true_and_calls_import(
     result = await c._import_key_backup()
     assert result is True
     mock_nio_client.import_keys.assert_called_once_with(key_file, "secret")
+    c._store.close()
 
 
 async def test_import_key_backup_writes_fingerprint_sentinel_on_success(
@@ -631,9 +658,8 @@ async def test_import_key_backup_writes_fingerprint_sentinel_on_success(
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file=key_file)
     await c._import_key_backup()
-    sentinel = tmp_path / "key_backup_imported"
-    assert sentinel.exists()
-    assert sentinel.read_text() == _fingerprint(key_file)
+    assert c._store.get_meta("key_backup_imported") == _fingerprint(key_file)
+    c._store.close()
 
 
 async def test_import_key_backup_skips_sentinel_on_error(
@@ -645,7 +671,8 @@ async def test_import_key_backup_skips_sentinel_on_error(
                             mock_nio_client, key_file=key_file)
     with pytest.raises(RuntimeError, match="bad passphrase"):
         await c._import_key_backup()
-    assert not (tmp_path / "key_backup_imported").exists()
+    assert c._store.get_meta("key_backup_imported") is None
+    c._store.close()
 
 
 async def test_import_key_backup_fails_if_file_missing(
@@ -656,30 +683,33 @@ async def test_import_key_backup_fails_if_file_missing(
     with pytest.raises(FileNotFoundError, match="MATRIX_KEY_BACKUP_FILE"):
         await c._import_key_backup()
     mock_nio_client.import_keys.assert_not_called()
+    c._store.close()
 
 
 async def test_import_key_backup_fails_if_sentinel_fingerprint_mismatch(
     mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     key_file = _write_key_file(tmp_path)
-    (tmp_path / "key_backup_imported").write_text(_fingerprint(key_file, passphrase="old-pass"))
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file=key_file, passphrase="new-pass")
+    c._store.set_meta("key_backup_imported", _fingerprint(key_file, passphrase="old-pass"))
     with pytest.raises(RuntimeError, match="MATRIX_KEY_BACKUP_FILE or MATRIX_KEY_BACKUP_PASSPHRASE has changed"):
         await c._import_key_backup()
     mock_nio_client.import_keys.assert_not_called()
+    c._store.close()
 
 
 async def test_import_key_backup_fails_if_sentinel_empty(
     mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
     key_file = _write_key_file(tmp_path)
-    (tmp_path / "key_backup_imported").write_text("")
     c = _make_backup_client(tmp_path, vector_store, embedding_client, webhook_dispatcher,
                             mock_nio_client, key_file=key_file)
+    c._store.set_meta("key_backup_imported", "")
     with pytest.raises(RuntimeError, match="MATRIX_KEY_BACKUP_FILE or MATRIX_KEY_BACKUP_PASSPHRASE has changed"):
         await c._import_key_backup()
     mock_nio_client.import_keys.assert_not_called()
+    c._store.close()
 
 
 # --- start(): backfill sentinel cleared after first key import ---
@@ -692,7 +722,6 @@ def _make_start_helpers(tmp_path, mock_nio_client, vector_store, embedding_clien
     cfg.matrix_key_backup_file = key_file
     cfg.matrix_key_backup_passphrase = "secret" if key_file else ""
     c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
-    c._client = mock_nio_client
     mock_nio_client.loaded_sync_token = "stored_t99"
     mock_nio_client.sync.return_value = _make_initial_sync()
     mock_nio_client.joined_rooms.return_value = MagicMock(rooms=[])
@@ -705,13 +734,17 @@ async def test_start_clears_backfill_sentinel_when_key_first_imported(
     """When a key backup is imported for the first time and a completed backfill exists,
     start() must clear the backfill sentinel so backfill re-runs and decrypts history."""
     key_file = _write_key_file(tmp_path)
-    (tmp_path / "backfill_complete").write_text("")
-    # No key_backup_imported sentinel — this is the first run with a key.
     c = _make_start_helpers(tmp_path, mock_nio_client, vector_store, embedding_client,
                             webhook_dispatcher, key_file=key_file)
+    # Backfill already done, but no key imported yet — first run with a key.
+    c._store.open()
+    c._store.set_meta("backfill_complete", "1")
+    c._store.close()
+
     with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
         create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
         await c.start()
+    c._store.close()
 
     # Backfill must have run (sync + joined_rooms called), not the fast restart path.
     mock_nio_client.sync.assert_called_once()
@@ -724,13 +757,18 @@ async def test_start_does_not_clear_backfill_sentinel_for_same_key(
     """Re-running with the same key backup (sentinel fingerprint matches) must NOT
     trigger a re-backfill — start() should take the fast restart path."""
     key_file = _write_key_file(tmp_path)
-    (tmp_path / "backfill_complete").write_text("")
-    (tmp_path / "key_backup_imported").write_text(_fingerprint(key_file))
     c = _make_start_helpers(tmp_path, mock_nio_client, vector_store, embedding_client,
                             webhook_dispatcher, key_file=key_file)
+    # Both sentinels already in DB — normal restart state.
+    c._store.open()
+    c._store.set_meta("backfill_complete", "1")
+    c._store.set_meta("key_backup_imported", _fingerprint(key_file))
+    c._store.close()
+
     with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
         create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
         await c.start()
+    c._store.close()
 
     # Fast restart path: no sync, no backfill.
     mock_nio_client.sync.assert_not_called()
@@ -759,28 +797,24 @@ def _make_two_room_sync(room_ids: list[str], prev_batch: str = "t1") -> MagicMoc
 async def test_on_message_skips_ignored_room(client, mock_nio_client):
     IGNORED = "!ignored:example.org"
     client._config.ignored_room_ids = frozenset([IGNORED])
-    room = MagicMock()
-    room.room_id = IGNORED
+    room = _make_room(room_id=IGNORED)
     event = _make_text_event()
-    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
 
-    assert len(client._buffer) == 0
+    assert client._store.get_recent_messages(10) == []
     client._vector_store.upsert.assert_not_called()
 
 
 async def test_on_message_allows_non_ignored_room(client, mock_nio_client):
     client._config.ignored_room_ids = frozenset(["!other:example.org"])
-    room = MagicMock()
-    room.room_id = "!allowed:example.org"
+    room = _make_room(room_id="!allowed:example.org")
     event = _make_text_event()
     client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
-    client._save_pending_index = MagicMock()
 
     await client._on_message(room, event)
 
-    assert len(client._buffer) == 1
+    assert len(client._store.get_recent_messages(10)) == 1
     client._vector_store.upsert.assert_called_once()
 
 
