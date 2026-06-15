@@ -373,15 +373,16 @@ class MatrixMCPClient:
         logger.info("Re-indexing %d messages from pending index", len(pending))
         for record in pending:
             try:
-                await self._index_message(record)
+                await self._index_message(record, dispatch_webhook=False)
                 self._store.mark_indexed(record.event_id)
             except Exception:
                 logger.exception("Failed to re-index pending message %s", record.event_id)
 
-    async def _index_message(self, record: MessageRecord) -> None:
+    async def _index_message(self, record: MessageRecord, dispatch_webhook: bool = True) -> None:
         vector = await self._embedding_client.embed(record.body)
         await self._vector_store.upsert(record, vector)
-        await self._webhook_dispatcher.dispatch(record)
+        if dispatch_webhook:
+            await self._webhook_dispatcher.dispatch(record)
 
     async def _batch_index(self, records: list[MessageRecord]) -> None:
         if not records:

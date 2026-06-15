@@ -404,6 +404,7 @@ async def test_retry_pending_index_reindexes_and_clears(client):
     await client._retry_pending_index()
 
     client._vector_store.upsert.assert_called_once()
+    client._webhook_dispatcher.dispatch.assert_not_called()
     assert not client._store.get_pending_messages()
 
 
@@ -462,6 +463,17 @@ async def test_index_message_embeds_body_only(client):
     await client._index_message(record)
 
     client._embedding_client.embed.assert_called_once_with("hello world")
+    client._webhook_dispatcher.dispatch.assert_called_once_with(record)
+
+
+async def test_index_message_without_webhook_dispatch(client):
+    record = MessageRecord("$body:x", "!r:x", "", "@alice:x", "Alice", "hello world", 1000)
+    client._embedding_client.embed = AsyncMock(return_value=[0.1] * 1536)
+
+    await client._index_message(record, dispatch_webhook=False)
+
+    client._embedding_client.embed.assert_called_once_with("hello world")
+    client._webhook_dispatcher.dispatch.assert_not_called()
 
 
 async def test_batch_index_embeds_bodies_only(client):
