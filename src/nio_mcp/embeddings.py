@@ -21,7 +21,7 @@ class EmbeddingClient:
         api_key: str,
         model: str = "text-embedding-3-small",
         dimensions: Optional[int] = None,
-        max_tokens: int = 8192,
+        max_tokens: int = 8191,
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key)
         self._model = model
@@ -34,10 +34,16 @@ class EmbeddingClient:
 
     def _truncate(self, text: str) -> str:
         tokens = self._encoding.encode_ordinary(text)
-        if len(tokens) <= self._max_tokens:
+        safe_max = min(self._max_tokens, 8191)
+        if len(tokens) <= safe_max:
             return text
-        logger.warning("Truncating text from %d to %d tokens", len(tokens), self._max_tokens)
-        return self._encoding.decode(tokens[: self._max_tokens])
+
+        # When truncating, truncate to slightly less than safe_max (leaving a buffer)
+        # to prevent partial/malformed UTF-8 characters at the boundary from expanding
+        # when decoded and re-encoded.
+        truncate_len = max(1, safe_max - 16)
+        logger.warning("Truncating text from %d to %d tokens", len(tokens), truncate_len)
+        return self._encoding.decode(tokens[:truncate_len])
 
     async def embed(self, text: str) -> list[float]:
         results = await self.embed_batch([text])

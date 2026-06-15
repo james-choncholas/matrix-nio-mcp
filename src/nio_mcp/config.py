@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     openai_api_key: str
     embedding_model: str = "text-embedding-3-small"
     embedding_vector_size: int = 1536
-    embedding_max_tokens: int = 8192  # truncate texts longer than this before embedding
+    embedding_max_tokens: int = 8191  # truncate texts longer than this before embedding
 
     # Webhook / LLM callback
     webhook_url: str = ""  # OpenAI-compatible base URL, e.g. https://api.openai.com/v1

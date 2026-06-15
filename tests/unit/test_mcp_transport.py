@@ -208,7 +208,7 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
     settings.openai_api_key = "sk-test"
     settings.embedding_model = "text-embedding-3-small"
     settings.embedding_vector_size = 1536
-    settings.embedding_max_tokens = 8192
+    settings.embedding_max_tokens = 8191
     settings.qdrant_host = "qdrant.internal"
     settings.qdrant_port = 6334
     settings.qdrant_collection = "matrix_messages"

@@ -91,3 +91,43 @@ async def test_embed_batch_omits_dimensions_when_not_set(client, mock_openai):
     await client.embed("test")
     call_kwargs = mock_openai.embeddings.create.call_args
     assert "dimensions" not in call_kwargs.kwargs
+
+
+async def test_truncate_logic_no_truncation(client):
+    # Short text should not be truncated
+    text = "hello world"
+    result = client._truncate(text)
+    assert result == text
+
+
+async def test_truncate_logic_truncates_long_text():
+    # Setup client with max_tokens of 100
+    client = EmbeddingClient(api_key="test-key", max_tokens=100)
+
+    # We want a text that encodes to > 100 tokens. Let's make one.
+    encoding = client._encoding
+    long_text = " ".join(["token"] * 150)
+    tokens = encoding.encode_ordinary(long_text)
+    assert len(tokens) > 100
+
+    truncated = client._truncate(long_text)
+    truncated_tokens = encoding.encode_ordinary(truncated)
+    # It should have been truncated to 100 - 16 = 84 tokens
+    assert len(truncated_tokens) == 84
+
+
+async def test_truncate_logic_respects_hard_safe_max():
+    # Setup client with max_tokens of 10000 (which is larger than the hard 8191 limit)
+    client = EmbeddingClient(api_key="test-key", max_tokens=10000)
+
+    # Text with > 8191 tokens
+    long_text = " ".join(["hello"] * 9000)
+    encoding = client._encoding
+    tokens = encoding.encode_ordinary(long_text)
+    assert len(tokens) > 8191
+
+    truncated = client._truncate(long_text)
+    truncated_tokens = encoding.encode_ordinary(truncated)
+    # The absolute maximum is 8191. So safe_max = min(10000, 8191) = 8191.
+    # It should be truncated to 8191 - 16 = 8175 tokens
+    assert len(truncated_tokens) == 8175
