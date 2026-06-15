@@ -187,6 +187,65 @@ async def test_lifespan_passes_idle_timeout_to_session_manager():
 
 
 @pytest.mark.asyncio
+async def test_lifespan_passes_webhook_settings_to_dispatcher():
+    fake_vs = MagicMock()
+    fake_vs.init_collection = AsyncMock()
+    fake_vs.close = AsyncMock()
+
+    fake_wd = MagicMock()
+    fake_wd.start = AsyncMock()
+    fake_wd.close = AsyncMock()
+
+    fake_mc = MagicMock()
+    fake_mc.start = AsyncMock()
+    fake_mc.stop = AsyncMock()
+
+    embedding_client = MagicMock()
+    sm = _FakeSessionManager()
+    settings = MagicMock()
+    settings.http_auth_token = ""
+    settings.mcp_session_timeout = 1800
+    settings.openai_api_key = "sk-test"
+    settings.embedding_model = "text-embedding-3-small"
+    settings.embedding_vector_size = 1536
+    settings.embedding_max_tokens = 8192
+    settings.qdrant_host = "qdrant.internal"
+    settings.qdrant_port = 6334
+    settings.qdrant_collection = "matrix_messages"
+    settings.webhook_url = "http://llm.example.com/v1"
+    settings.webhook_bearer_token = "secret-token"
+    settings.webhook_prompt_header = "Summarize these:"
+    settings.webhook_prompt_per_msg = "{sender_name}: {message}"
+    settings.webhook_model = "gpt-4.1-mini"
+    settings.webhook_cooldown_seconds = 12.5
+    settings.sse_queue_maxsize = 42
+
+    webhook_dispatcher_ctor = MagicMock(return_value=fake_wd)
+
+    with (
+        patch("nio_mcp.server.VectorStore", return_value=fake_vs),
+        patch("nio_mcp.server.WebhookDispatcher", webhook_dispatcher_ctor),
+        patch("nio_mcp.server.MatrixMCPClient", return_value=fake_mc),
+        patch("nio_mcp.server.EmbeddingClient", return_value=embedding_client),
+        patch("nio_mcp.server.StreamableHTTPSessionManager", return_value=sm),
+        patch("nio_mcp.server.get_settings", return_value=settings),
+    ):
+        lifespan_cm = server_module.lifespan(server_module.app)
+        await lifespan_cm.__aenter__()
+        await lifespan_cm.__aexit__(None, None, None)
+
+    webhook_dispatcher_ctor.assert_called_once_with(
+        webhook_url="http://llm.example.com/v1",
+        bearer_token="secret-token",
+        prompt_header="Summarize these:",
+        prompt_per_msg="{sender_name}: {message}",
+        model="gpt-4.1-mini",
+        cooldown_seconds=12.5,
+        queue_maxsize=42,
+    )
+
+
+@pytest.mark.asyncio
 async def test_lifespan_does_not_block_on_matrix_startup():
     started = asyncio.Event()
     cancelled = asyncio.Event()

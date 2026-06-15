@@ -36,7 +36,11 @@ def test_default_values(monkeypatch):
     assert s.qdrant_port == 6333
     assert s.qdrant_collection == "matrix_messages"
     assert s.webhook_url == ""
-    assert s.webhook_secret == ""
+    assert s.webhook_bearer_token == ""
+    assert s.webhook_prompt_header == "New Matrix messages:"
+    assert s.webhook_prompt_per_msg == "{sender_name} ({sender}) in {room_name} ({room}): {message}"
+    assert s.webhook_model == "gpt-4o-mini"
+    assert s.webhook_cooldown_seconds == 300.0
     assert s.backfill_limit == 100
     assert s.backfill_pages_max == 10
     assert s.message_buffer_size == 500
@@ -49,11 +53,23 @@ def test_env_overrides_defaults(monkeypatch):
     s = _make_settings(monkeypatch, {
         "QDRANT_HOST": "qdrant.internal",
         "QDRANT_PORT": "6334",
+        "WEBHOOK_URL": "http://llm.example.com/v1",
+        "WEBHOOK_BEARER_TOKEN": "secret-token",
+        "WEBHOOK_PROMPT_HEADER": "Summarize these:",
+        "WEBHOOK_PROMPT_PER_MSG": "{sender_name}: {message}",
+        "WEBHOOK_MODEL": "gpt-4.1-mini",
+        "WEBHOOK_COOLDOWN_SECONDS": "12.5",
         "BACKFILL_LIMIT": "50",
         "MCP_PORT": "9000",
     })
     assert s.qdrant_host == "qdrant.internal"
     assert s.qdrant_port == 6334
+    assert s.webhook_url == "http://llm.example.com/v1"
+    assert s.webhook_bearer_token == "secret-token"
+    assert s.webhook_prompt_header == "Summarize these:"
+    assert s.webhook_prompt_per_msg == "{sender_name}: {message}"
+    assert s.webhook_model == "gpt-4.1-mini"
+    assert s.webhook_cooldown_seconds == 12.5
     assert s.backfill_limit == 50
     assert s.mcp_port == 9000
 
@@ -101,6 +117,15 @@ def test_invalid_numeric_fields_raise_validation_error(monkeypatch, field, value
 def test_backfill_pages_max_zero_is_valid(monkeypatch):
     s = _make_settings(monkeypatch, {"BACKFILL_PAGES_MAX": "0"})
     assert s.backfill_pages_max == 0
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-0.5"])
+def test_invalid_webhook_cooldown_seconds_raise_validation_error(monkeypatch, value):
+    for key, val in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.setenv("WEBHOOK_COOLDOWN_SECONDS", value)
+    with pytest.raises(ValidationError):
+        Settings()
 
 
 # --- key backup paired-field validator ---

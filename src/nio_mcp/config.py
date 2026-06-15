@@ -29,9 +29,13 @@ class Settings(BaseSettings):
     embedding_vector_size: int = 1536
     embedding_max_tokens: int = 8192  # truncate texts longer than this before embedding
 
-    # Webhook
-    webhook_url: str = ""
-    webhook_secret: str = ""
+    # Webhook / LLM callback
+    webhook_url: str = ""  # OpenAI-compatible base URL, e.g. https://api.openai.com/v1
+    webhook_bearer_token: str = ""
+    webhook_prompt_header: str = "New Matrix messages:"  # appears once before all message lines
+    webhook_prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}"
+    webhook_model: str = "gpt-4o-mini"
+    webhook_cooldown_seconds: float = 300.0  # fire LLM only after this many quiet seconds
 
     # Behaviour
     backfill_limit: int = 100
@@ -59,6 +63,13 @@ class Settings(BaseSettings):
     def must_be_positive(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("must be a positive integer")
+        return v
+
+    @field_validator("webhook_cooldown_seconds")
+    @classmethod
+    def cooldown_must_be_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("must be a positive number")
         return v
 
     @field_validator("backfill_pages_max")

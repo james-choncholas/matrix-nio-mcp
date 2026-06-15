@@ -260,7 +260,11 @@ async def lifespan(app: FastAPI):
     )
     webhook_dispatcher = WebhookDispatcher(
         webhook_url=settings.webhook_url,
-        webhook_secret=settings.webhook_secret,
+        bearer_token=settings.webhook_bearer_token,
+        prompt_header=settings.webhook_prompt_header,
+        prompt_per_msg=settings.webhook_prompt_per_msg,
+        model=settings.webhook_model,
+        cooldown_seconds=settings.webhook_cooldown_seconds,
         queue_maxsize=settings.sse_queue_maxsize,
     )
     matrix_client = MatrixMCPClient(

@@ -9,7 +9,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for [Matrix](
 - **`get_message_context`** — retrieve messages surrounding a specific event (useful after a search hit)
 - **`get_room_info`** — return the friendly display name and full member list (MXID + display name) for a room
 - **`send_message`** — send a text message to any joined room
-- **Webhooks** — POST to a configurable URL and/or stream events via SSE whenever a new message arrives
+- **LLM callback** — call any OpenAI-compatible endpoint with a configurable prompt after a cooldown period; multiple messages are batched; also stream events via SSE
 - **E2EE support** — works with encrypted rooms via libolm
 - **Backfill on startup** — indexes historical messages from all joined rooms before going live
 
@@ -50,8 +50,12 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `OPENAI_API_KEY` | yes | — | OpenAI API key for embeddings |
 | `EMBEDDING_MODEL` | no | `text-embedding-3-small` | OpenAI embedding model; `dimensions` is only supported by `text-embedding-3-*` models |
 | `EMBEDDING_VECTOR_SIZE` | no | `1536` | Output dimension requested from the model and used for the Qdrant collection; see note below |
-| `WEBHOOK_URL` | no | — | URL to POST new-message payloads to |
-| `WEBHOOK_SECRET` | no | — | HMAC-SHA256 signing secret; enables `X-Nio-MCP-Signature` header |
+| `WEBHOOK_URL` | no | — | OpenAI-compatible base URL for the LLM callback (e.g. `https://api.openai.com/v1`) |
+| `WEBHOOK_BEARER_TOKEN` | no | — | Bearer token sent in the `Authorization` header |
+| `WEBHOOK_PROMPT_HEADER` | no | `New Matrix messages:` | Text prepended once before all per-message lines |
+| `WEBHOOK_PROMPT_PER_MSG` | no | `{sender_name} ({sender}) in {room_name} ({room}): {message}` | Template rendered once per buffered message |
+| `WEBHOOK_MODEL` | no | `gpt-4o-mini` | Model name passed to the LLM |
+| `WEBHOOK_COOLDOWN_SECONDS` | no | `300` | Seconds of silence before the LLM is called; multiple messages within the window are batched |
 | `BACKFILL_LIMIT` | no | `100` | Messages fetched per page per room during startup backfill |
 | `BACKFILL_PAGES_MAX` | no | `10` | Maximum backfill pages per room; `0` = full history |
 | `MESSAGE_BUFFER_SIZE` | no | `500` | In-memory ring buffer size for `get_recent_messages` |
@@ -179,21 +183,42 @@ Sends a plain-text message to a room.
 
 ## Webhooks
 
-### HTTP POST
+### LLM callback
 
-When `WEBHOOK_URL` is set, a POST request is sent to that URL for every new message:
+When `WEBHOOK_URL` is set, an OpenAI-compatible chat-completions request is sent after a configurable cooldown period with no new messages (default 5 minutes). Multiple messages arriving within the cooldown window are batched into a single call.
 
-```json
+```
+POST {WEBHOOK_URL}/chat/completions
+Authorization: Bearer {WEBHOOK_BEARER_TOKEN}
+Content-Type: application/json
+
 {
-  "event_id": "$abc:example.org",
-  "room_id": "!abc123:example.org",
-  "sender": "@alice:example.org",
-  "body": "Hello!",
-  "timestamp": 1700000000000
+  "model": "gpt-4o-mini",
+  "messages": [{ "role": "user", "content": "<rendered prompt>" }]
 }
 ```
 
-If `WEBHOOK_SECRET` is set, the request includes an `X-Nio-MCP-Signature: sha256=<hmac>` header for verification.
+**`WEBHOOK_PROMPT_HEADER`** is prepended once. **`WEBHOOK_PROMPT_PER_MSG`** is rendered for every buffered message and the results are joined with newlines. Braces inside message bodies are never re-interpreted as placeholders.
+
+| Placeholder | Value |
+|---|---|
+| `{message}` | Body of the message |
+| `{sender_name}` | Display name of the sender |
+| `{sender}` | MXID of the sender |
+| `{room_name}` | Display name of the room |
+| `{room}` | Room MXID |
+
+Example:
+```
+WEBHOOK_PROMPT_HEADER=Summarize these Matrix messages and list action items:
+WEBHOOK_PROMPT_PER_MSG={sender_name} said: {message}
+```
+Produces a user message like:
+```
+Summarize these Matrix messages and list action items:
+Alice said: Can we move the standup?
+Bob said: Sure, how about 10am?
+```
 
 ### SSE stream
 
@@ -234,7 +259,7 @@ curl http://localhost:8000/health
 │       │            │              │                     │
 │  ┌────▼───┐  ┌─────▼────┐  ┌─────▼───────────┐        │
 │  │Qdrant  │  │ OpenAI   │  │WebhookDispatcher│        │
-│  │vector  │  │embeddings│  │ HTTP POST + SSE │        │
+│  │vector  │  │embeddings│  │ LLM call + SSE  │        │
 │  │store   │  │          │  │  per-subscriber │        │
 │  └────────┘  └──────────┘  └────────────────┘        │
 └──────────────────────────────────────────────────────────┘
