@@ -219,6 +219,7 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
     settings.webhook_model = "gpt-4.1-mini"
     settings.webhook_cooldown_seconds = 12.5
     settings.sse_queue_maxsize = 42
+    settings.webhook_tools = '{"tool_ids": ["test"]}'
 
     webhook_dispatcher_ctor = MagicMock(return_value=fake_wd)
 
@@ -242,6 +243,7 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
         model="gpt-4.1-mini",
         cooldown_seconds=12.5,
         queue_maxsize=42,
+        tools='{"tool_ids": ["test"]}',
     )
 
 

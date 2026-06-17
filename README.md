@@ -56,6 +56,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `WEBHOOK_PROMPT_PER_MSG` | no | `{sender_name} ({sender}) in {room_name} ({room}): {message}` | Template rendered once per buffered message |
 | `WEBHOOK_MODEL` | no | `gpt-4o-mini` | Model name passed to the LLM |
 | `WEBHOOK_COOLDOWN_SECONDS` | no | `300` | Seconds of silence before the LLM is called; multiple messages within the window are batched |
+| `WEBHOOK_TOOLS` | no | — | Optional JSON string of tools/parameters merged into the chat completions request body |
 | `BACKFILL_LIMIT` | no | `100` | Messages fetched per page per room during startup backfill |
 | `BACKFILL_PAGES_MAX` | no | `10` | Maximum backfill pages per room; `0` = full history |
 | `MESSAGE_BUFFER_SIZE` | no | `500` | In-memory ring buffer size for `get_recent_messages` |

@@ -60,6 +60,7 @@ def test_env_overrides_defaults(monkeypatch):
         "WEBHOOK_PROMPT_PER_MSG": "{sender_name}: {message}",
         "WEBHOOK_MODEL": "gpt-4.1-mini",
         "WEBHOOK_COOLDOWN_SECONDS": "12.5",
+        "WEBHOOK_TOOLS": '{"tool_ids": ["test"]}',
         "BACKFILL_LIMIT": "50",
         "MCP_PORT": "9000",
     })
@@ -71,6 +72,7 @@ def test_env_overrides_defaults(monkeypatch):
     assert s.webhook_prompt_per_msg == "{sender_name}: {message}"
     assert s.webhook_model == "gpt-4.1-mini"
     assert s.webhook_cooldown_seconds == 12.5
+    assert s.webhook_tools == '{"tool_ids": ["test"]}'
     assert s.backfill_limit == 50
     assert s.mcp_port == 9000
 
