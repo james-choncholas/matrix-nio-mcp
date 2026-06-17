@@ -41,6 +41,7 @@ def test_default_values(monkeypatch):
     assert s.webhook_prompt_per_msg == "{sender_name} ({sender}) in {room_name} ({room}): {message}"
     assert s.webhook_model == "gpt-4o-mini"
     assert s.webhook_cooldown_seconds == 300.0
+    assert s.webhook_tools == ""
     assert s.backfill_limit == 100
     assert s.backfill_pages_max == 10
     assert s.message_buffer_size == 500

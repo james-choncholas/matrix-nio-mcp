@@ -266,6 +266,7 @@ async def lifespan(app: FastAPI):
         model=settings.webhook_model,
         cooldown_seconds=settings.webhook_cooldown_seconds,
         queue_maxsize=settings.sse_queue_maxsize,
+        tools=settings.webhook_tools,
     )
     matrix_client = MatrixMCPClient(
         config=settings,

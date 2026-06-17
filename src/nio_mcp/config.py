@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     webhook_prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}"
     webhook_model: str = "gpt-4o-mini"
     webhook_cooldown_seconds: float = 300.0  # fire LLM only after this many quiet seconds
+    webhook_tools: str = ""  # JSON object merged into the chat completions body, e.g. '{"tool_ids": ["server:mcp:myserver"]}'
 
     # Behaviour
     backfill_limit: int = 100

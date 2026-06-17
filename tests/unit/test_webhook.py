@@ -303,6 +303,44 @@ async def test_llm_failure_still_delivers_to_sse_subscribers():
 
 
 @respx.mock
+async def test_llm_includes_tools_in_body_when_set():
+    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    d = WebhookDispatcher(
+        webhook_url="http://llm.example.com/v1",
+        bearer_token="tok",
+        cooldown_seconds=0.01,
+        queue_maxsize=10,
+        tools='{"tool_ids": ["server:mcp:myserver"]}',
+    )
+    await d.start()
+    await d.dispatch(RECORD)
+    await asyncio.sleep(0.05)
+    body = json.loads(route.calls.last.request.content)
+    assert body["tool_ids"] == ["server:mcp:myserver"]
+
+
+@respx.mock
+async def test_llm_omits_tools_from_body_when_not_set():
+    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    d = WebhookDispatcher(
+        webhook_url="http://llm.example.com/v1",
+        bearer_token="tok",
+        cooldown_seconds=0.01,
+        queue_maxsize=10,
+    )
+    await d.start()
+    await d.dispatch(RECORD)
+    await asyncio.sleep(0.05)
+    body = json.loads(route.calls.last.request.content)
+    assert "tool_ids" not in body
+    assert "tools" not in body
+
+
+@respx.mock
 async def test_llm_failure_logs_warning(caplog):
     import logging
     respx.post("http://llm.example.com/v1/chat/completions").mock(

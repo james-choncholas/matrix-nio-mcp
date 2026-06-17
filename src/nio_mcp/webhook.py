@@ -51,6 +51,7 @@ class WebhookDispatcher:
         model: str = "gpt-4o-mini",
         cooldown_seconds: float = 300.0,
         queue_maxsize: int = 100,
+        tools: str = "",
     ) -> None:
         self._webhook_url = webhook_url.rstrip("/")
         self._bearer_token = bearer_token
@@ -59,6 +60,7 @@ class WebhookDispatcher:
         self._model = model
         self._cooldown_seconds = cooldown_seconds
         self._queue_maxsize = queue_maxsize
+        self._tools: dict = json.loads(tools) if tools else {}
         self._subscribers: set[asyncio.Queue] = set()
         self._http: Optional[httpx.AsyncClient] = None
         self._pending_records: list[MessageRecord] = []
@@ -124,6 +126,7 @@ class WebhookDispatcher:
         body = {
             "model": self._model,
             "messages": [{"role": "user", "content": content}],
+            **self._tools,
         }
         resp = await self._http.post(url, json=body, headers=headers)
         resp.raise_for_status()
