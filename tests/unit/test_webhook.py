@@ -283,6 +283,55 @@ async def test_llm_http_error_status_does_not_raise():
 
 
 @respx.mock
+async def test_llm_success_logs_response_body(caplog):
+    import logging
+
+    respx.post("http://llm.example.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+    )
+    d = WebhookDispatcher(
+        webhook_url="http://llm.example.com/v1",
+        bearer_token="tok",
+        cooldown_seconds=0.01,
+        queue_maxsize=10,
+    )
+    await d.start()
+    with caplog.at_level(logging.INFO, logger="nio_mcp.webhook"):
+        await d.dispatch(RECORD)
+        await asyncio.sleep(0.05)
+    assert any(
+        "llm webhook response" in r.message.lower()
+        and '"choices":[{"message":{"content":"ok"}}]' in r.message.replace(" ", "")
+        for r in caplog.records
+    )
+
+
+@respx.mock
+async def test_llm_http_error_logs_response_body(caplog):
+    import logging
+
+    respx.post("http://llm.example.com/v1/chat/completions").mock(
+        return_value=httpx.Response(503, text="upstream overloaded")
+    )
+    d = WebhookDispatcher(
+        webhook_url="http://llm.example.com/v1",
+        bearer_token="tok",
+        cooldown_seconds=0.01,
+        queue_maxsize=10,
+    )
+    await d.start()
+    with caplog.at_level(logging.WARNING, logger="nio_mcp.webhook"):
+        await d.dispatch(RECORD)
+        await asyncio.sleep(0.05)
+    assert any(
+        "llm webhook error response" in r.message.lower()
+        and "status=503" in r.message.lower()
+        and "upstream overloaded" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+@respx.mock
 async def test_llm_failure_still_delivers_to_sse_subscribers():
     respx.post("http://llm.example.com/v1/chat/completions").mock(
         side_effect=httpx.ConnectError("refused")

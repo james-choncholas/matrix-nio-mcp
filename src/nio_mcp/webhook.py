@@ -129,9 +129,26 @@ class WebhookDispatcher:
             **self._tools,
         }
         resp = await self._http.post(url, json=body, headers=headers)
+        response_text = resp.text
+        if resp.is_success:
+            logger.info(
+                "LLM webhook response: messages=%d model=%s status=%d body=%s",
+                len(records),
+                self._model,
+                resp.status_code,
+                response_text,
+            )
+        else:
+            logger.warning(
+                "LLM webhook error response: messages=%d model=%s status=%d body=%s",
+                len(records),
+                self._model,
+                resp.status_code,
+                response_text,
+            )
         resp.raise_for_status()
         logger.debug(
-            "LLM webhook: called with %d message(s); model=%s status=%d",
+            "LLM webhook: completed call with %d message(s); model=%s status=%d",
             len(records),
             self._model,
             resp.status_code,
