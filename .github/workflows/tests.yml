@@ -36,16 +36,81 @@ jobs:
     steps:
       - name: Install system packages
         run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          export DEBIAN_FRONTEND=noninteractive
+
+          echo "==> Updating package lists"
           sudo apt-get update
-          sudo apt-get remove -y containerd || true
-          sudo apt-get remove -y containerd.io || true
+
+          echo "==> Installing base build/runtime dependencies"
           sudo apt-get install -y --no-install-recommends \
-            docker.io \
-            docker-compose \
-            gcc \
-            git \
-            libolm3 \
-            libolm-dev
+              gcc \
+              git \
+              libolm3 \
+              libolm-dev \
+              ca-certificates \
+              curl \
+              gnupg
+            
+          # ---------------------------------------------------------------------------
+          # Docker: only (re)install if a *working* engine + compose plugin aren't
+          # already present. GitHub-hosted runners ship Docker CE + containerd.io
+          # pre-installed; self-hosted Gitea runners typically have nothing.
+          # We deliberately avoid the distro's `docker.io`/`docker-compose` packages
+          # (often ancient) and always source Docker from its official apt repo when
+          # an install is actually needed.
+          # ---------------------------------------------------------------------------
+
+          docker_present() {
+            command -v docker >/dev/null 2>&1 && sudo docker version >/dev/null 2>&1
+          }
+
+          compose_present() {
+            sudo docker compose version >/dev/null 2>&1
+          }
+
+          if docker_present && compose_present; then
+            echo "==> Docker + compose plugin already present, skipping installation"
+            sudo docker version
+            sudo docker compose version
+          else
+            echo "==> Docker not fully present, installing from Docker's official apt repo"
+
+            # Purge any distro/conflicting packages first (harmless if absent).
+            # These are exactly the packages Docker's own docs say to remove before
+            # adding their repo, since they conflict with containerd.io / docker-ce.
+            for pkg in docker.io docker-doc docker-compose docker-compose-v2 \
+                podman-docker containerd runc; do
+              sudo apt-get remove -y "$pkg" >/dev/null 2>&1 || true
+            done
+
+            sudo install -m 0755 -d /etc/apt/keyrings
+
+            # Works for both Ubuntu and Debian based hosts.
+            . /etc/os-release
+            os_id="${ID}"
+            codename="${UBUNTU_CODENAME:-${VERSION_CODENAME}}"
+
+            if [ ! -f /etc/apt/keyrings/docker.asc ]; then
+              curl -fsSL "https://download.docker.com/linux/${os_id}/gpg" | \
+                sudo tee /etc/apt/keyrings/docker.asc >/dev/null
+              sudo chmod a+r /etc/apt/keyrings/docker.asc
+            fi
+
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${os_id} ${codename} stable" | \
+              sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              docker-ce \
+              docker-ce-cli \
+              containerd.io \
+              docker-buildx-plugin \
+              docker-compose-plugin
+          fi
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Set up Python
