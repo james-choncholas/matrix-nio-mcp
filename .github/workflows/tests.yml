@@ -54,7 +54,5 @@ jobs:
           python-version: "3.12"
       - name: Install Python dependencies
         run: pip install ".[test]"
-      - name: Verify Docker access
-        run: docker version
       - name: Run integration tests
         run: sh ./scripts/test-matrix-integration.sh
