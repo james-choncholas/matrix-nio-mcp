@@ -81,10 +81,15 @@ jobs:
             # Purge any distro/conflicting packages first (harmless if absent).
             # These are exactly the packages Docker's own docs say to remove before
             # adding their repo, since they conflict with containerd.io / docker-ce.
-            for pkg in docker.io docker-doc docker-compose docker-compose-v2 \
-                podman-docker containerd runc; do
-              sudo apt-get remove -y "$pkg" >/dev/null 2>&1 || true
+            for pkg in \
+              docker.io docker-doc docker-compose docker-compose-v2 \
+              podman-docker containerd runc \
+              moby-buildx moby-cli moby-compose moby-containerd \
+              moby-engine moby-runc moby-tini; do
+              sudo apt-get purge -y "$pkg" >/dev/null 2>&1 || true
             done
+            sudo apt-get autoremove -y >/dev/null 2>&1 || true
+          
 
             sudo install -m 0755 -d /etc/apt/keyrings
 
