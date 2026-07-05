@@ -15,8 +15,8 @@ jobs:
     steps:
       - name: Install system packages
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends git gcc libolm3 libolm-dev
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git gcc libolm3 libolm-dev
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Set up Python
@@ -36,8 +36,8 @@ jobs:
     steps:
       - name: Install system packages
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
             docker.io \
             docker-compose \
             gcc \
