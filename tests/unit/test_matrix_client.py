@@ -260,9 +260,10 @@ async def test_start_resumes_from_stored_token_on_restart(
 async def test_start_restart_with_persisted_room_does_not_crash_and_send_message_works(
     mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
 ):
-    """_restore_rooms_to_client must not set name/display_name on MatrixRoom (read-only
-    property).  The room only needs to be present in client.rooms for send_message to work;
-    the DB remains the source of truth for human-readable labels."""
+    """_restore_rooms_to_client must not set .name on MatrixRoom: that field represents
+    the actual m.room.name state event, and Matrix (via the next name/state sync) is
+    the source of truth for it — nio-mcp must never synthesize a value for it from the
+    DB. The room only needs to be present in client.rooms for send_message to work."""
     cfg = _make_config()
     cfg.matrix_store_path = str(tmp_path)
     mock_nio_client.loaded_sync_token = "stored_t99"
@@ -280,7 +281,7 @@ async def test_start_restart_with_persisted_room_does_not_crash_and_send_message
 
     restored = mock_nio_client.rooms.get("!dm:example.org")
     assert restored is not None, "room must be in client.rooms after restart"
-    assert restored.name is None, "name must stay unset; DB is source of truth for labels"
+    assert restored.name is None, "name must stay unset; Matrix is source of truth for it"
 
     # send_message must reach room_send without error
     resp = MagicMock(spec=nio.RoomSendResponse)
@@ -288,6 +289,81 @@ async def test_start_restart_with_persisted_room_does_not_crash_and_send_message
     mock_nio_client.room_send = AsyncMock(return_value=resp)
     result = await c.send_message("!dm:example.org", "hello")
     assert result["event_id"] == "$sent:x"
+
+    c._store.close()
+
+
+async def test_restore_rooms_to_client_repopulates_members_from_db(
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    """_restore_rooms_to_client must hydrate room.users from the persisted `members`
+    table. Without this, a restarted bot's MatrixRoom objects have an empty `.users`
+    dict, and since sync_forever resumes from a stored token (an incremental sync
+    that does not resend full membership for unchanged rooms), that dict can stay
+    empty indefinitely for rooms with stable membership."""
+    cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
+    mock_nio_client.loaded_sync_token = "stored_t99"
+
+    c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
+    c._store.open()
+    c._store.set_meta("backfill_complete", "1")
+    c._store.upsert_room("!group:example.org", "Empty Room", encrypted=False)
+    c._store.upsert_member("!group:example.org", "@alice:example.org", "Alice")
+    c._store.upsert_member("!group:example.org", "@bob:example.org", "Bob")
+    c._store.upsert_member("!group:example.org", "@bot:example.org", "Bot")
+    c._store.close()
+
+    with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
+        create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+        await c.start()
+
+    restored = mock_nio_client.rooms.get("!group:example.org")
+    assert restored is not None
+    assert set(restored.users.keys()) == {
+        "@alice:example.org",
+        "@bob:example.org",
+        "@bot:example.org",
+    }
+    assert restored.users["@alice:example.org"].display_name == "Alice"
+
+    c._store.close()
+
+
+async def test_restart_group_room_display_name_is_not_empty_room(
+    mock_makedirs, mock_nio_client, vector_store, embedding_client, webhook_dispatcher, tmp_path
+):
+    """Regression test for the "Empty Room" bug: an unnamed group room (e.g. a
+    bridged group chat with no m.room.name) whose membership is stable across a
+    restart must not have its display_name collapse to nio's "Empty Room"
+    fallback just because sync_forever resumed from a stored token instead of
+    doing a full_state sync."""
+    cfg = _make_config()
+    cfg.matrix_store_path = str(tmp_path)
+    mock_nio_client.loaded_sync_token = "stored_t99"
+    # This is nio-mcp's own account; the group-name heuristic excludes it.
+    cfg.matrix_user_id = "@bot:example.org"
+
+    c = MatrixMCPClient(cfg, vector_store, embedding_client, webhook_dispatcher)
+    c._store.open()
+    c._store.set_meta("backfill_complete", "1")
+    c._store.upsert_room("!group:example.org", "Empty Room", encrypted=False)
+    c._store.upsert_member("!group:example.org", "@alice:example.org", "Alice")
+    c._store.upsert_member("!group:example.org", "@bob:example.org", "Bob")
+    c._store.upsert_member("!group:example.org", "@bot:example.org", "Bot")
+    c._store.close()
+
+    with patch("nio_mcp.matrix_client.asyncio.create_task") as create_task:
+        create_task.side_effect = lambda coro: (coro.close(), MagicMock())[1]
+        await c.start()
+
+    restored = mock_nio_client.rooms.get("!group:example.org")
+    assert restored is not None
+    # No m.room.name/canonical_alias was ever set, so this exercises nio's
+    # group_name() heuristic directly, the same as named_room_name() being None.
+    assert restored.display_name != "Empty Room"
+    assert "Alice" in restored.display_name
+    assert "Bob" in restored.display_name
 
     c._store.close()
 

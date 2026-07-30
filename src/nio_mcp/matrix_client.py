@@ -293,7 +293,24 @@ class MatrixMCPClient:
 
     def _restore_rooms_to_client(self) -> None:
         """Pre-populate nio's room dict from the DB so send_message works immediately
-        on restart, before the first sync response arrives."""
+        on restart, before the first sync response arrives.
+
+        On restart, sync_forever resumes from a stored token (an incremental sync),
+        which only sends state *deltas* — it does not resend the full member list
+        or room summary for rooms whose membership hasn't changed since the last
+        sync. A freshly constructed MatrixRoom has empty `.users` and no `.summary`,
+        so nio's own display_name heuristic (group_name) sees zero members and
+        computes the literal string "Empty Room" for any unnamed group room until
+        some unrelated membership event happens to repopulate it.
+
+        We fix this by restoring the member roster we already persisted in the
+        `members` table into `.users` via `add_member`, so nio's own heuristic has
+        the data it needs to compute the correct group-style name immediately,
+        the same way it would from a full-state sync. We deliberately do NOT set
+        `.name` here — that field represents the actual `m.room.name` state event,
+        and Matrix (via the next name/state sync) remains the source of truth for
+        it, not a value we synthesize from the DB.
+        """
         for room_data in self._store.get_all_rooms():
             room_id = room_data["room_id"]
             if room_id not in self._client.rooms:
@@ -302,6 +319,10 @@ class MatrixMCPClient:
                     own_user_id=self._config.matrix_user_id,
                     encrypted=bool(room_data["encrypted"]),
                 )
+                for member in self._store.get_members(room_id):
+                    matrix_room.add_member(
+                        member["mxid"], member["display_name"], None,
+                    )
                 self._client.rooms[room_id] = matrix_room
 
     # -------------------------------------------------------------------------
