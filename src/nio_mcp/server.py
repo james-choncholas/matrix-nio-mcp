@@ -7,7 +7,7 @@ import anyio
 import uvicorn
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from mcp.server import Server
+from mcp.server import Server, ServerRequestContext
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp import types
 from sse_starlette.sse import EventSourceResponse
@@ -27,15 +27,17 @@ _session_manager: StreamableHTTPSessionManager | None = None
 # MCP server                                                                   #
 # --------------------------------------------------------------------------- #
 
-mcp = Server("nio-mcp")
+def _json_response(data) -> types.CallToolResult:
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=json.dumps(data))],
+        is_error=False,
+    )
 
 
-def _json_response(data) -> list[types.TextContent]:
-    return [types.TextContent(type="text", text=json.dumps(data))]
-
-
-@mcp.list_tools()
-async def list_tools() -> list[types.Tool]:
+async def list_tools(
+    ctx: ServerRequestContext,
+    params: types.PaginatedRequestParams | None,
+) -> types.ListToolsResult:
     settings = get_settings()
     tools = [
         types.Tool(
@@ -45,7 +47,7 @@ async def list_tools() -> list[types.Tool]:
                 "Optionally filter by sender (exact MXID only, e.g. @alice:example.org) "
                 "and/or room_id. For fuzzy sender matching use search_messages."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "k": {"type": "integer", "default": 20, "description": "Number of messages"},
@@ -64,7 +66,7 @@ async def list_tools() -> list[types.Tool]:
                 "reverse chronological order by timestamp (no similarity score). At least one of "
                 "query, sender, room, after_ts, or before_ts must be provided."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural-language search query; embedded with OpenAI and matched by cosine similarity"},
@@ -88,7 +90,7 @@ async def list_tools() -> list[types.Tool]:
                 "Fetch messages surrounding a specific event. "
                 "Use after search_messages to retrieve context around a found message."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "required": ["room_id", "event_id"],
                 "properties": {
@@ -107,7 +109,7 @@ async def list_tools() -> list[types.Tool]:
                 "Return the friendly name and member list for a Matrix room. "
                 "Each member includes their MXID and display name."
             ),
-            inputSchema={
+            input_schema={
                 "type": "object",
                 "required": ["room_id"],
                 "properties": {
@@ -121,7 +123,7 @@ async def list_tools() -> list[types.Tool]:
             types.Tool(
                 name="send_message",
                 description="Send a text message to a Matrix room.",
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "required": ["room_id", "body"],
                     "properties": {
@@ -131,11 +133,16 @@ async def list_tools() -> list[types.Tool]:
                 },
             )
         )
-    return tools
+    return types.ListToolsResult(tools=tools)
 
 
-@mcp.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+async def call_tool(
+    ctx: ServerRequestContext,
+    params: types.CallToolRequestParams,
+) -> types.CallToolResult:
+    name = params.name
+    arguments = params.arguments or {}
+
     matrix_client = app.state.matrix_client
     if matrix_client is None:
         raise RuntimeError("Matrix client not initialised")
@@ -221,6 +228,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     except Exception as exc:
         logger.exception("Tool %s raised an error", name)
         return _json_response({"error": str(exc)})
+
+
+# Handlers are registered via constructor kwargs (mcp 2.x); the v1 decorator API is gone.
+mcp = Server("nio-mcp", on_list_tools=list_tools, on_call_tool=call_tool)
 
 
 # --------------------------------------------------------------------------- #

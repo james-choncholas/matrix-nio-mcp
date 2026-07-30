@@ -1,6 +1,8 @@
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from mcp import types
+from mcp.client import Client
 from nio_mcp.models import MessageRecord, SearchResult
 import nio_mcp.server as server_module
 
@@ -77,9 +79,20 @@ def mock_embedding_and_store():
         yield emb_instance, vs_instance
 
 
+def _ctx():
+    """Stand-in for the ServerRequestContext mcp 2.x passes to every handler.
+
+    The nio-mcp handlers never read it, so a bare mock is enough.
+    """
+    return MagicMock()
+
+
 async def _call(name, arguments):
-    results = await server_module.call_tool(name, arguments)
-    return json.loads(results[0].text)
+    result = await server_module.call_tool(
+        _ctx(), types.CallToolRequestParams(name=name, arguments=arguments)
+    )
+    assert result.is_error is False
+    return json.loads(result.content[0].text)
 
 
 async def test_get_recent_messages_delegates_to_client(mock_matrix_client):
@@ -206,9 +219,59 @@ async def test_call_tool_raises_runtime_error_when_client_not_initialized():
     server_module.app.state.matrix_client = None
     try:
         with pytest.raises(RuntimeError, match="Matrix client not initialised"):
-            await server_module.call_tool("get_recent_messages", {})
+            await server_module.call_tool(
+                _ctx(), types.CallToolRequestParams(name="get_recent_messages", arguments={})
+            )
     finally:
         server_module.app.state.matrix_client = original
+
+
+async def test_call_tool_treats_missing_arguments_as_empty(mock_matrix_client):
+    result = await server_module.call_tool(
+        _ctx(), types.CallToolRequestParams(name="get_recent_messages", arguments=None)
+    )
+    mock_matrix_client.get_recent_messages.assert_called_once_with(k=20, sender=None, room_id=None)
+    assert result.is_error is False
+
+
+async def test_list_tools_returns_result_type_and_hides_send_message_by_default():
+    settings = MagicMock()
+    settings.allow_send_message = False
+    with patch("nio_mcp.server.get_settings", return_value=settings):
+        result = await server_module.list_tools(_ctx(), None)
+
+    assert isinstance(result, types.ListToolsResult)
+    names = [t.name for t in result.tools]
+    assert names == [
+        "get_recent_messages",
+        "search_messages",
+        "get_message_context",
+        "get_room_info",
+    ]
+    assert all(t.input_schema["type"] == "object" for t in result.tools)
+
+
+async def test_list_tools_includes_send_message_when_enabled():
+    settings = MagicMock()
+    settings.allow_send_message = True
+    with patch("nio_mcp.server.get_settings", return_value=settings):
+        result = await server_module.list_tools(_ctx(), None)
+
+    assert "send_message" in [t.name for t in result.tools]
+
+
+async def test_handlers_are_wired_into_the_server(mock_matrix_client):
+    """End-to-end over an in-memory session, to prove the on_* constructor wiring works."""
+    settings = MagicMock()
+    settings.allow_send_message = False
+    with patch("nio_mcp.server.get_settings", return_value=settings):
+        async with Client(server_module.mcp) as client:
+            listed = await client.list_tools()
+            assert "get_recent_messages" in [t.name for t in listed.tools]
+
+            called = await client.call_tool("get_recent_messages", {"k": 1})
+            assert called.is_error is False
+            assert json.loads(called.content[0].text)[0]["event_id"] == RECORD.event_id
 
 
 async def test_sse_endpoint_raises_runtime_error_when_dispatcher_not_initialized():
