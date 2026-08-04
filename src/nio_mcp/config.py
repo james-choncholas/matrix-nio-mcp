@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     webhook_prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}"
     webhook_model: str = "gpt-4o-mini"
     webhook_cooldown_seconds: float = 300.0  # fire LLM only after this many quiet seconds
+    webhook_timeout_seconds: float = 300.0  # read timeout for agentic LLM requests
     webhook_tools: str = ""  # JSON object merged into the chat completions body, e.g. '{"tool_ids": ["server:mcp:myserver"]}'
 
     # Behaviour
@@ -66,7 +67,7 @@ class Settings(BaseSettings):
             raise ValueError("must be a positive integer")
         return v
 
-    @field_validator("webhook_cooldown_seconds")
+    @field_validator("webhook_cooldown_seconds", "webhook_timeout_seconds")
     @classmethod
     def cooldown_must_be_positive(cls, v: float) -> float:
         if v <= 0:

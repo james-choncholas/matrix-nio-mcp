@@ -56,6 +56,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `WEBHOOK_PROMPT_PER_MSG` | no | `{sender_name} ({sender}) in {room_name} ({room}): {message}` | Template rendered once per buffered message |
 | `WEBHOOK_MODEL` | no | `gpt-4o-mini` | Model name passed to the LLM |
 | `WEBHOOK_COOLDOWN_SECONDS` | no | `300` | Seconds of silence before the LLM is called; multiple messages within the window are batched |
+| `WEBHOOK_TIMEOUT_SECONDS` | no | `300` | Seconds to wait while reading an LLM response; connect, write, and pool timeouts remain short |
 | `WEBHOOK_TOOLS` | no | — | Optional JSON string of tools/parameters merged into the chat completions request body |
 | `BACKFILL_LIMIT` | no | `100` | Messages fetched per page per room during startup backfill |
 | `BACKFILL_PAGES_MAX` | no | `10` | Maximum backfill pages per room; `0` = full history |
@@ -186,7 +187,7 @@ Sends a plain-text message to a room.
 
 ### LLM callback
 
-When `WEBHOOK_URL` is set, an OpenAI-compatible chat-completions request is sent after a configurable cooldown period with no new messages (default 5 minutes). Multiple messages arriving within the cooldown window are batched into a single call.
+When `WEBHOOK_URL` is set, an OpenAI-compatible chat-completions request is sent after a configurable cooldown period with no new messages (default 5 minutes). Multiple messages arriving within the cooldown window are batched into a single call, with a maximum of 50 messages per batch; reaching the cap sends that batch immediately.
 
 ```
 POST {WEBHOOK_URL}/chat/completions

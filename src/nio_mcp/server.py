@@ -276,6 +276,7 @@ async def lifespan(app: FastAPI):
         prompt_per_msg=settings.webhook_prompt_per_msg,
         model=settings.webhook_model,
         cooldown_seconds=settings.webhook_cooldown_seconds,
+        timeout_seconds=settings.webhook_timeout_seconds,
         queue_maxsize=settings.sse_queue_maxsize,
         tools=settings.webhook_tools,
     )

@@ -12,6 +12,8 @@ _PER_MSG_RE = re.compile(r"\{(message|sender_name|sender|room_name|room)\}")
 
 logger = logging.getLogger(__name__)
 
+_MAX_BATCH_SIZE = 50
+
 
 def _record_to_json(record: MessageRecord) -> str:
     return json.dumps(record.to_dict())
@@ -50,6 +52,7 @@ class WebhookDispatcher:
         prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}",
         model: str = "gpt-4o-mini",
         cooldown_seconds: float = 300.0,
+        timeout_seconds: float = 300.0,
         queue_maxsize: int = 100,
         tools: str = "",
     ) -> None:
@@ -59,15 +62,19 @@ class WebhookDispatcher:
         self._prompt_per_msg = prompt_per_msg
         self._model = model
         self._cooldown_seconds = cooldown_seconds
+        self._timeout = httpx.Timeout(
+            connect=10.0, read=timeout_seconds, write=30.0, pool=10.0
+        )
         self._queue_maxsize = queue_maxsize
         self._tools: dict = json.loads(tools) if tools else {}
         self._subscribers: set[asyncio.Queue] = set()
         self._http: Optional[httpx.AsyncClient] = None
         self._pending_records: list[MessageRecord] = []
         self._cooldown_task: Optional[asyncio.Task] = None
+        self._delivery_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
-        self._http = httpx.AsyncClient(timeout=30.0)
+        self._http = httpx.AsyncClient(timeout=self._timeout)
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=self._queue_maxsize)
@@ -95,7 +102,13 @@ class WebhookDispatcher:
             self._pending_records.append(record)
             if self._cooldown_task is not None and not self._cooldown_task.done():
                 self._cooldown_task.cancel()
-            self._cooldown_task = asyncio.create_task(self._cooldown_fire())
+            if len(self._pending_records) >= _MAX_BATCH_SIZE:
+                records = self._pending_records[:_MAX_BATCH_SIZE]
+                del self._pending_records[:_MAX_BATCH_SIZE]
+                self._cooldown_task = None
+                self._schedule_delivery(records)
+            else:
+                self._cooldown_task = asyncio.create_task(self._cooldown_fire())
 
     async def _cooldown_fire(self) -> None:
         try:
@@ -106,6 +119,14 @@ class WebhookDispatcher:
         self._cooldown_task = None
         if not records:
             return
+        await self._deliver(records)
+
+    def _schedule_delivery(self, records: list[MessageRecord]) -> None:
+        task = asyncio.create_task(self._deliver(records))
+        self._delivery_tasks.add(task)
+        task.add_done_callback(self._delivery_tasks.discard)
+
+    async def _deliver(self, records: list[MessageRecord]) -> None:
         try:
             await self._call_llm(records)
         except Exception:
@@ -117,7 +138,7 @@ class WebhookDispatcher:
 
     async def _call_llm(self, records: list[MessageRecord]) -> None:
         if self._http is None:
-            self._http = httpx.AsyncClient(timeout=30.0)
+            self._http = httpx.AsyncClient(timeout=self._timeout)
         content = _render_prompt(self._prompt_header, self._prompt_per_msg, records)
         url = f"{self._webhook_url}/chat/completions"
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -157,5 +178,7 @@ class WebhookDispatcher:
     async def close(self) -> None:
         if self._cooldown_task is not None and not self._cooldown_task.done():
             self._cooldown_task.cancel()
+        for task in self._delivery_tasks:
+            task.cancel()
         if self._http and not self._http.is_closed:
             await self._http.aclose()

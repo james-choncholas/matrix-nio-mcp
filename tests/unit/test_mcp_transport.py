@@ -218,6 +218,7 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
     settings.webhook_prompt_per_msg = "{sender_name}: {message}"
     settings.webhook_model = "gpt-4.1-mini"
     settings.webhook_cooldown_seconds = 12.5
+    settings.webhook_timeout_seconds = 240.0
     settings.sse_queue_maxsize = 42
     settings.webhook_tools = '{"tool_ids": ["test"]}'
 
@@ -242,6 +243,7 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
         prompt_per_msg="{sender_name}: {message}",
         model="gpt-4.1-mini",
         cooldown_seconds=12.5,
+        timeout_seconds=240.0,
         queue_maxsize=42,
         tools='{"tool_ids": ["test"]}',
     )

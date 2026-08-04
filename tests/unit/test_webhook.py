@@ -250,6 +250,38 @@ async def test_cooldown_resets_on_new_message():
     assert route.called
 
 
+async def test_configured_timeout_only_extends_read_timeout():
+    d = WebhookDispatcher(timeout_seconds=240.0)
+    await d.start()
+    assert d._http.timeout.read == 240.0
+    assert d._http.timeout.connect == 10.0
+    assert d._http.timeout.write == 30.0
+    assert d._http.timeout.pool == 10.0
+    await d.close()
+
+
+@respx.mock
+async def test_batch_cap_fires_at_50_without_waiting_for_cooldown():
+    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": []})
+    )
+    d = WebhookDispatcher(
+        webhook_url="http://llm.example.com/v1",
+        prompt_header="",
+        prompt_per_msg="{message}",
+        cooldown_seconds=60.0,
+    )
+    await d.start()
+    for _ in range(50):
+        await d.dispatch(RECORD)
+    await asyncio.sleep(0.05)
+    assert route.call_count == 1
+    body = json.loads(route.calls.last.request.content)
+    assert len(body["messages"][0]["content"].splitlines()) == 50
+    assert d._pending_records == []
+    await d.close()
+
+
 @respx.mock
 async def test_llm_failure_does_not_raise():
     respx.post("http://llm.example.com/v1/chat/completions").mock(
