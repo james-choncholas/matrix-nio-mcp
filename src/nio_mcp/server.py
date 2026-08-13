@@ -14,6 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from nio_mcp.config import get_settings
 from nio_mcp.embeddings import EmbeddingClient
+from nio_mcp.llm_callback import create_llm_callback_client
 from nio_mcp.matrix_client import MatrixMCPClient
 from nio_mcp.vector_store import VectorStore
 from nio_mcp.webhook import WebhookDispatcher
@@ -27,10 +28,10 @@ _session_manager: StreamableHTTPSessionManager | None = None
 # MCP server                                                                   #
 # --------------------------------------------------------------------------- #
 
-def _json_response(data) -> types.CallToolResult:
+def _json_response(data, *, is_error: bool = False) -> types.CallToolResult:
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=json.dumps(data))],
-        is_error=False,
+        is_error=is_error,
     )
 
 
@@ -165,7 +166,10 @@ async def call_tool(
             before_ts = arguments.get("before_ts")
 
             if not query and not sender and not room and after_ts is None and before_ts is None:
-                return _json_response({"error": "Provide at least one of: query, sender, room, after_ts, before_ts"})
+                return _json_response(
+                    {"error": "Provide at least one of: query, sender, room, after_ts, before_ts"},
+                    is_error=True,
+                )
 
             settings = get_settings()
             vector_store = VectorStore(
@@ -203,7 +207,10 @@ async def call_tool(
 
         if name == "send_message":
             if not get_settings().allow_send_message:
-                return _json_response({"error": "send_message is disabled; set ALLOW_SEND_MESSAGE=true to enable"})
+                return _json_response(
+                    {"error": "send_message is disabled; set ALLOW_SEND_MESSAGE=true to enable"},
+                    is_error=True,
+                )
             result = await matrix_client.send_message(
                 room_id=arguments["room_id"],
                 body=arguments["body"],
@@ -223,11 +230,11 @@ async def call_tool(
             result = matrix_client.get_room_info(room_id=arguments["room_id"])
             return _json_response(result)
 
-        return _json_response({"error": f"Unknown tool: {name}"})
+        return _json_response({"error": f"Unknown tool: {name}"}, is_error=True)
 
     except Exception as exc:
         logger.exception("Tool %s raised an error", name)
-        return _json_response({"error": str(exc)})
+        return _json_response({"error": str(exc)}, is_error=True)
 
 
 # Handlers are registered via constructor kwargs (mcp 2.x); the v1 decorator API is gone.
@@ -269,14 +276,18 @@ async def lifespan(app: FastAPI):
         port=settings.qdrant_port,
         collection=settings.qdrant_collection,
     )
-    webhook_dispatcher = WebhookDispatcher(
-        webhook_url=settings.webhook_url,
+    llm_callback_client = create_llm_callback_client(
+        backend=settings.webhook_llm_backend,
+        base_url=settings.webhook_url,
         bearer_token=settings.webhook_bearer_token,
+        timeout_seconds=settings.webhook_timeout_seconds,
+    )
+    webhook_dispatcher = WebhookDispatcher(
+        llm_client=llm_callback_client,
         prompt_header=settings.webhook_prompt_header,
         prompt_per_msg=settings.webhook_prompt_per_msg,
         model=settings.webhook_model,
         cooldown_seconds=settings.webhook_cooldown_seconds,
-        timeout_seconds=settings.webhook_timeout_seconds,
         queue_maxsize=settings.sse_queue_maxsize,
         tools=settings.webhook_tools,
     )

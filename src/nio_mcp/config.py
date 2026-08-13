@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from pydantic import computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,14 +31,15 @@ class Settings(BaseSettings):
     embedding_max_tokens: int = 8191  # truncate texts longer than this before embedding
 
     # Webhook / LLM callback
-    webhook_url: str = ""  # OpenAI-compatible base URL, e.g. https://api.openai.com/v1
+    webhook_url: str = ""  # OpenWebUI origin or API base, e.g. https://host/api/v1
+    webhook_llm_backend: Literal["openwebui_chat"] = "openwebui_chat"
     webhook_bearer_token: str = ""
     webhook_prompt_header: str = "New Matrix messages:"  # appears once before all message lines
     webhook_prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}"
     webhook_model: str = "gpt-4o-mini"
     webhook_cooldown_seconds: float = 300.0  # fire LLM only after this many quiet seconds
     webhook_timeout_seconds: float = 300.0  # read timeout for agentic LLM requests
-    webhook_tools: str = ""  # JSON object merged into the chat completions body, e.g. '{"tool_ids": ["server:mcp:myserver"]}'
+    webhook_tools: str = ""  # Extra request JSON, e.g. '{"tool_ids": ["server:mcp:myserver"]}'
 
     # Behaviour
     backfill_limit: int = 100

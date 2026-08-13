@@ -13,7 +13,8 @@ src/nio_mcp/
 ├── embeddings.py     # Thin async wrapper around openai.AsyncOpenAI embeddings
 ├── vector_store.py   # Thin async wrapper around qdrant_client.AsyncQdrantClient
 ├── matrix_client.py  # The bulk of the logic: Matrix session, backfill, live sync, buffer
-├── webhook.py        # HTTP POST dispatcher + per-subscriber SSE queue fan-out
+├── llm_callback.py   # Pluggable LLM callback clients; OpenWebUI native-agent loop
+├── webhook.py        # LLM batching/prompt dispatcher + per-subscriber SSE queue fan-out
 └── server.py         # MCP tool definitions + FastAPI SSE app; wires everything together
 
 tests/
@@ -36,6 +37,7 @@ MatrixMCPClient
   ├── EmbeddingClient    (called during backfill and on each live message)
   ├── VectorStore        (upsert during indexing, search during search_messages tool)
   └── WebhookDispatcher  (dispatch() called on each indexed live message)
+        └── LLMCallbackClient (currently OpenWebUIChatClient)
 ```
 
 `search_messages` is the one MCP tool that constructs its own `EmbeddingClient` and `VectorStore` per call rather than reusing the shared instances. This is intentional simplicity — searches are infrequent and the clients are stateless. When `query` is absent or whitespace-only, `EmbeddingClient` is not constructed at all and `VectorStore.scroll()` is called instead of `VectorStore.search()`; sender and time filters still apply through Qdrant payload filters.

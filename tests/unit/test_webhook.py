@@ -1,11 +1,11 @@
 import asyncio
 import json
-import pytest
-import respx
-import httpx
+from typing import Any, Mapping
 
-from nio_mcp.webhook import WebhookDispatcher, _render_per_msg, _render_prompt
+import pytest
+
 from nio_mcp.models import MessageRecord
+from nio_mcp.webhook import WebhookDispatcher, _render_per_msg, _render_prompt
 
 
 RECORD = MessageRecord(
@@ -29,69 +29,99 @@ RECORD2 = MessageRecord(
 )
 
 
+class FakeLLMClient:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.started = False
+        self.closed = False
+        self.calls: list[dict[str, Any]] = []
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def run(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        request_options: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "model": model,
+                "prompt": prompt,
+                "request_options": dict(request_options),
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return {
+            "content": "no relevant messages received, passing for now",
+            "output": [{"type": "tool_call", "name": "example"}],
+        }
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 @pytest.fixture
 def dispatcher():
     return WebhookDispatcher(queue_maxsize=3)
 
 
-# ── SSE subscriber mechanics ──────────────────────────────────────────────────
+# -- SSE subscriber mechanics -------------------------------------------------
 
 def test_subscribe_returns_bounded_queue(dispatcher):
-    q = dispatcher.subscribe()
-    assert q.maxsize == 3
-    assert q in dispatcher._subscribers
+    queue = dispatcher.subscribe()
+    assert queue.maxsize == 3
+    assert queue in dispatcher._subscribers
 
 
 def test_unsubscribe_removes_queue(dispatcher):
-    q = dispatcher.subscribe()
-    dispatcher.unsubscribe(q)
-    assert q not in dispatcher._subscribers
+    queue = dispatcher.subscribe()
+    dispatcher.unsubscribe(queue)
+    assert queue not in dispatcher._subscribers
 
 
 def test_unsubscribe_unknown_queue_is_safe(dispatcher):
-    q: asyncio.Queue = asyncio.Queue()
-    dispatcher.unsubscribe(q)  # should not raise
+    dispatcher.unsubscribe(asyncio.Queue())
 
 
 async def test_dispatch_delivers_to_all_subscribers(dispatcher):
-    q1 = dispatcher.subscribe()
-    q2 = dispatcher.subscribe()
+    queue_1 = dispatcher.subscribe()
+    queue_2 = dispatcher.subscribe()
     await dispatcher.dispatch(RECORD)
-    assert not q1.empty()
-    assert not q2.empty()
-    data1 = json.loads(q1.get_nowait())
-    data2 = json.loads(q2.get_nowait())
-    assert data1["event_id"] == RECORD.event_id
-    assert data2["event_id"] == RECORD.event_id
+    assert json.loads(queue_1.get_nowait())["event_id"] == RECORD.event_id
+    assert json.loads(queue_2.get_nowait())["event_id"] == RECORD.event_id
 
 
 async def test_dispatch_does_not_deliver_to_unsubscribed(dispatcher):
-    q = dispatcher.subscribe()
-    dispatcher.unsubscribe(q)
+    queue = dispatcher.subscribe()
+    dispatcher.unsubscribe(queue)
     await dispatcher.dispatch(RECORD)
-    assert q.empty()
+    assert queue.empty()
 
 
 async def test_dispatch_full_queue_drops_oldest_not_newest(dispatcher):
-    q = dispatcher.subscribe()
-    for i in range(3):
-        q.put_nowait(json.dumps({"body": f"old-{i}"}))
+    queue = dispatcher.subscribe()
+    for index in range(3):
+        queue.put_nowait(json.dumps({"body": f"old-{index}"}))
     await dispatcher.dispatch(RECORD)
     items = []
-    while not q.empty():
-        items.append(json.loads(q.get_nowait()))
+    while not queue.empty():
+        items.append(json.loads(queue.get_nowait()))
     assert len(items) == 3
     assert items[-1]["event_id"] == RECORD.event_id
 
 
-async def test_dispatch_no_llm_call_when_no_url(dispatcher):
-    q = dispatcher.subscribe()
+async def test_dispatch_does_not_schedule_callback_without_client(dispatcher):
+    queue = dispatcher.subscribe()
     await dispatcher.dispatch(RECORD)
-    assert not q.empty()
+    assert not queue.empty()
     assert dispatcher._cooldown_task is None
 
 
-# ── Prompt rendering ──────────────────────────────────────────────────────────
+# -- Prompt rendering ---------------------------------------------------------
 
 def test_render_per_msg_all_placeholders():
     result = _render_per_msg(
@@ -101,343 +131,194 @@ def test_render_per_msg_all_placeholders():
 
 
 def test_render_per_msg_subset_of_placeholders():
-    result = _render_per_msg("{sender_name} said {message}", RECORD)
-    assert result == "Alice said Hello"
+    assert _render_per_msg("{sender_name} said {message}", RECORD) == "Alice said Hello"
 
 
 def test_render_per_msg_body_with_braces_not_reinterpreted():
     record = MessageRecord(
-        event_id="$x", room_id="!r", room_name="R",
-        sender="@a", sender_name="A",
+        event_id="$x",
+        room_id="!r",
+        room_name="R",
+        sender="@a",
+        sender_name="A",
         body="use {sender} carefully",
         timestamp=0,
     )
-    result = _render_per_msg("msg: {message}", record)
-    assert result == "msg: use {sender} carefully"
+    assert _render_per_msg("msg: {message}", record) == "msg: use {sender} carefully"
 
 
 def test_render_prompt_header_prepended_once():
-    result = _render_prompt("Header:", "{message}", [RECORD, RECORD2])
-    lines = result.splitlines()
-    assert lines[0] == "Header:"
-    assert lines[1] == "Hello"
-    assert lines[2] == "World"
+    assert _render_prompt("Header:", "{message}", [RECORD, RECORD2]).splitlines() == [
+        "Header:",
+        "Hello",
+        "World",
+    ]
 
 
 def test_render_prompt_no_header():
-    result = _render_prompt("", "{message}", [RECORD, RECORD2])
-    lines = result.splitlines()
-    assert lines == ["Hello", "World"]
+    assert _render_prompt("", "{message}", [RECORD, RECORD2]) == "Hello\nWorld"
 
 
 def test_render_prompt_single_message():
-    result = _render_prompt("Hdr:", "{sender_name}: {message}", [RECORD])
-    assert result == "Hdr:\nAlice: Hello"
+    assert _render_prompt("Hdr:", "{sender_name}: {message}", [RECORD]) == (
+        "Hdr:\nAlice: Hello"
+    )
 
 
 def test_render_prompt_per_msg_applied_to_each_record():
-    result = _render_prompt("", "{sender_name}", [RECORD, RECORD2])
-    assert result == "Alice\nBob"
+    assert _render_prompt("", "{sender_name}", [RECORD, RECORD2]) == "Alice\nBob"
 
 
-# ── LLM webhook call ──────────────────────────────────────────────────────────
+# -- LLM callback dispatch ----------------------------------------------------
 
-@respx.mock
-async def test_llm_called_with_chat_completions_format():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="test-token",
+async def test_llm_client_receives_rendered_prompt_and_model():
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(
+        llm_client=client,
         prompt_header="Messages:",
         prompt_per_msg="{message}",
-        model="gpt-4o-mini",
+        model="steven",
         cooldown_seconds=0.01,
-        queue_maxsize=10,
     )
-    await d.start()
-    await d.dispatch(RECORD)
+    await dispatcher.start()
+    await dispatcher.dispatch(RECORD)
     await asyncio.sleep(0.05)
-    assert route.called
-    body = json.loads(route.calls.last.request.content)
-    assert body["model"] == "gpt-4o-mini"
-    assert body["messages"][0]["role"] == "user"
-    assert "Hello" in body["messages"][0]["content"]
-    assert "Messages:" in body["messages"][0]["content"]
+
+    assert client.started
+    assert client.calls == [
+        {
+            "model": "steven",
+            "prompt": "Messages:\nHello",
+            "request_options": {},
+        }
+    ]
 
 
-@respx.mock
-async def test_llm_omits_authorization_header_when_no_token():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    await d.dispatch(RECORD)
-    await asyncio.sleep(0.05)
-    assert "authorization" not in route.calls.last.request.headers
+async def test_start_and_close_are_delegated_to_llm_client():
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(llm_client=client)
+    await dispatcher.start()
+    await dispatcher.close()
+    assert client.started
+    assert client.closed
 
 
-@respx.mock
-async def test_llm_includes_bearer_token():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="secret-token",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    await d.dispatch(RECORD)
-    await asyncio.sleep(0.05)
-    request = route.calls.last.request
-    assert request.headers["Authorization"] == "Bearer secret-token"
-
-
-@respx.mock
 async def test_llm_batches_multiple_messages_in_one_call():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(
+        llm_client=client,
         prompt_header="",
         prompt_per_msg="{message}",
         cooldown_seconds=0.01,
-        queue_maxsize=10,
     )
-    await d.start()
-    await d.dispatch(RECORD)
-    await d.dispatch(RECORD2)
+    await dispatcher.start()
+    await dispatcher.dispatch(RECORD)
+    await dispatcher.dispatch(RECORD2)
     await asyncio.sleep(0.05)
-    assert route.call_count == 1
-    body = json.loads(route.calls.last.request.content)
-    content = body["messages"][0]["content"]
-    assert "Hello" in content
-    assert "World" in content
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["prompt"] == "Hello\nWorld"
 
 
-@respx.mock
 async def test_cooldown_resets_on_new_message():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.05,
-        queue_maxsize=10,
-    )
-    await d.start()
-    await d.dispatch(RECORD)
-    first_task = d._cooldown_task
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(llm_client=client, cooldown_seconds=0.05)
+    await dispatcher.start()
+    await dispatcher.dispatch(RECORD)
+    first_task = dispatcher._cooldown_task
     await asyncio.sleep(0.02)
-    assert not route.called  # cooldown not yet expired
-    await d.dispatch(RECORD2)  # resets the timer
-    assert first_task is not d._cooldown_task  # new task created
+    assert not client.calls
+    await dispatcher.dispatch(RECORD2)
+    assert first_task is not dispatcher._cooldown_task
     await asyncio.sleep(0.02)
-    assert not route.called  # still within new cooldown window
-    await asyncio.sleep(0.06)  # full cooldown after second message
-    assert route.called
+    assert not client.calls
+    await asyncio.sleep(0.06)
+    assert client.calls
 
 
-async def test_configured_timeout_only_extends_read_timeout():
-    d = WebhookDispatcher(timeout_seconds=240.0)
-    await d.start()
-    assert d._http.timeout.read == 240.0
-    assert d._http.timeout.connect == 10.0
-    assert d._http.timeout.write == 30.0
-    assert d._http.timeout.pool == 10.0
-    await d.close()
-
-
-@respx.mock
 async def test_batch_cap_fires_at_50_without_waiting_for_cooldown():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(
+        llm_client=client,
         prompt_header="",
         prompt_per_msg="{message}",
-        cooldown_seconds=60.0,
+        cooldown_seconds=60,
     )
-    await d.start()
+    await dispatcher.start()
     for _ in range(50):
-        await d.dispatch(RECORD)
+        await dispatcher.dispatch(RECORD)
     await asyncio.sleep(0.05)
-    assert route.call_count == 1
-    body = json.loads(route.calls.last.request.content)
-    assert len(body["messages"][0]["content"].splitlines()) == 50
-    assert d._pending_records == []
-    await d.close()
+
+    assert len(client.calls) == 1
+    assert len(client.calls[0]["prompt"].splitlines()) == 50
+    assert dispatcher._pending_records == []
+    await dispatcher.close()
 
 
-@respx.mock
-async def test_llm_failure_does_not_raise():
-    respx.post("http://llm.example.com/v1/chat/completions").mock(
-        side_effect=httpx.ConnectError("refused")
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    await d.dispatch(RECORD)
-    await asyncio.sleep(0.05)  # must not propagate
+async def test_llm_failure_does_not_escape_background_delivery():
+    client = FakeLLMClient(error=ConnectionError("refused"))
+    dispatcher = WebhookDispatcher(llm_client=client, cooldown_seconds=0.01)
+    await dispatcher.start()
+    await dispatcher.dispatch(RECORD)
+    await asyncio.sleep(0.05)
+    assert len(client.calls) == 1
 
 
-@respx.mock
-async def test_llm_http_error_status_does_not_raise():
-    respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(503)
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    await d.dispatch(RECORD)
-    await asyncio.sleep(0.05)  # must not propagate
-
-
-@respx.mock
-async def test_llm_success_logs_response_body(caplog):
-    import logging
-
-    respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    with caplog.at_level(logging.INFO, logger="nio_mcp.webhook"):
-        await d.dispatch(RECORD)
-        await asyncio.sleep(0.05)
-    assert any(
-        "llm webhook response" in r.message.lower()
-        and '"choices":[{"message":{"content":"ok"}}]' in r.message.replace(" ", "")
-        for r in caplog.records
-    )
-
-
-@respx.mock
-async def test_llm_http_error_logs_response_body(caplog):
-    import logging
-
-    respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(503, text="upstream overloaded")
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    with caplog.at_level(logging.WARNING, logger="nio_mcp.webhook"):
-        await d.dispatch(RECORD)
-        await asyncio.sleep(0.05)
-    assert any(
-        "llm webhook error response" in r.message.lower()
-        and "status=503" in r.message.lower()
-        and "upstream overloaded" in r.message.lower()
-        for r in caplog.records
-    )
-
-
-@respx.mock
 async def test_llm_failure_still_delivers_to_sse_subscribers():
-    respx.post("http://llm.example.com/v1/chat/completions").mock(
-        side_effect=httpx.ConnectError("refused")
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    q = d.subscribe()
-    await d.dispatch(RECORD)
-    assert not q.empty()
-    data = json.loads(q.get_nowait())
-    assert data["event_id"] == RECORD.event_id
-    await asyncio.sleep(0.05)  # let the cooldown fire and fail; must not propagate
-
-
-@respx.mock
-async def test_llm_includes_tools_in_body_when_set():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-        tools='{"tool_ids": ["server:mcp:myserver"]}',
-    )
-    await d.start()
-    await d.dispatch(RECORD)
+    client = FakeLLMClient(error=ConnectionError("refused"))
+    dispatcher = WebhookDispatcher(llm_client=client, cooldown_seconds=0.01)
+    await dispatcher.start()
+    queue = dispatcher.subscribe()
+    await dispatcher.dispatch(RECORD)
+    assert json.loads(queue.get_nowait())["event_id"] == RECORD.event_id
     await asyncio.sleep(0.05)
-    body = json.loads(route.calls.last.request.content)
-    assert body["tool_ids"] == ["server:mcp:myserver"]
 
 
-@respx.mock
-async def test_llm_omits_tools_from_body_when_not_set():
-    route = respx.post("http://llm.example.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": []})
+async def test_llm_success_logs_final_message_and_tool_output(caplog):
+    import logging
+
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(llm_client=client, cooldown_seconds=0.01)
+    await dispatcher.start()
+    with caplog.at_level(logging.INFO, logger="nio_mcp.webhook"):
+        await dispatcher.dispatch(RECORD)
+        await asyncio.sleep(0.05)
+
+    compact_messages = [record.message.replace(" ", "") for record in caplog.records]
+    assert any(
+        '"content":"norelevantmessagesreceived,passingfornow"' in message
+        and '"type":"tool_call"' in message
+        for message in compact_messages
     )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
-    await d.dispatch(RECORD)
-    await asyncio.sleep(0.05)
-    body = json.loads(route.calls.last.request.content)
-    assert "tool_ids" not in body
-    assert "tools" not in body
 
 
-@respx.mock
 async def test_llm_failure_logs_warning(caplog):
     import logging
-    respx.post("http://llm.example.com/v1/chat/completions").mock(
-        side_effect=httpx.ConnectError("refused")
-    )
-    d = WebhookDispatcher(
-        webhook_url="http://llm.example.com/v1",
-        bearer_token="tok",
-        cooldown_seconds=0.01,
-        queue_maxsize=10,
-    )
-    await d.start()
+
+    client = FakeLLMClient(error=ConnectionError("refused"))
+    dispatcher = WebhookDispatcher(llm_client=client, cooldown_seconds=0.01)
+    await dispatcher.start()
     with caplog.at_level(logging.WARNING, logger="nio_mcp.webhook"):
-        await d.dispatch(RECORD)
+        await dispatcher.dispatch(RECORD)
         await asyncio.sleep(0.05)
-    assert any(
-        "llm" in r.message.lower() or "webhook" in r.message.lower()
-        for r in caplog.records
+    assert any("llm webhook call failed" in record.message.lower() for record in caplog.records)
+
+
+async def test_llm_passes_configured_request_options():
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(
+        llm_client=client,
+        cooldown_seconds=0.01,
+        tools='{"tool_ids": ["server:mcp:matrix"]}',
     )
+    await dispatcher.start()
+    await dispatcher.dispatch(RECORD)
+    await asyncio.sleep(0.05)
+    assert client.calls[0]["request_options"] == {
+        "tool_ids": ["server:mcp:matrix"]
+    }
+
+
+def test_webhook_tools_must_be_a_json_object():
+    with pytest.raises(ValueError, match="JSON object"):
+        WebhookDispatcher(tools='["not", "an", "object"]')

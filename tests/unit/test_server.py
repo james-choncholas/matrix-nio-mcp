@@ -87,11 +87,11 @@ def _ctx():
     return MagicMock()
 
 
-async def _call(name, arguments):
+async def _call(name, arguments, *, expect_error=False):
     result = await server_module.call_tool(
         _ctx(), types.CallToolRequestParams(name=name, arguments=arguments)
     )
-    assert result.is_error is False
+    assert result.is_error is expect_error
     return json.loads(result.content[0].text)
 
 
@@ -154,7 +154,7 @@ async def test_search_messages_sender_only_uses_scroll(mock_embedding_and_store)
 
 
 async def test_search_messages_no_args_returns_error(mock_embedding_and_store):
-    data = await _call("search_messages", {})
+    data = await _call("search_messages", {}, expect_error=True)
     assert "error" in data
 
 
@@ -178,7 +178,7 @@ async def test_send_message_disabled_by_default(mock_matrix_client):
     settings = MagicMock()
     settings.allow_send_message = False
     with patch("nio_mcp.server.get_settings", return_value=settings):
-        data = await _call("send_message", {"room_id": "!r:x", "body": "Hi!"})
+        data = await _call("send_message", {"room_id": "!r:x", "body": "Hi!"}, expect_error=True)
     mock_matrix_client.send_message.assert_not_called()
     assert "error" in data
 
@@ -203,13 +203,13 @@ async def test_get_room_info_delegates_to_client(mock_matrix_client):
 
 
 async def test_unknown_tool_returns_error(mock_matrix_client):
-    data = await _call("nonexistent_tool", {})
+    data = await _call("nonexistent_tool", {}, expect_error=True)
     assert "error" in data
 
 
 async def test_tool_exception_returns_error_dict(mock_matrix_client):
     mock_matrix_client.get_recent_messages.side_effect = RuntimeError("boom")
-    data = await _call("get_recent_messages", {})
+    data = await _call("get_recent_messages", {}, expect_error=True)
     assert "error" in data
     assert "boom" in data["error"]
 

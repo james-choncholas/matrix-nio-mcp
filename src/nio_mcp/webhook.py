@@ -2,10 +2,9 @@ import asyncio
 import json
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
-import httpx
-
+from nio_mcp.llm_callback import LLMCallbackClient
 from nio_mcp.models import MessageRecord
 
 _PER_MSG_RE = re.compile(r"\{(message|sender_name|sender|room_name|room)\}")
@@ -46,35 +45,31 @@ def _render_prompt(header: str, per_msg_template: str, records: list[MessageReco
 class WebhookDispatcher:
     def __init__(
         self,
-        webhook_url: str = "",
-        bearer_token: str = "",
+        llm_client: LLMCallbackClient | None = None,
         prompt_header: str = "New Matrix messages:",
         prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}",
         model: str = "gpt-4o-mini",
         cooldown_seconds: float = 300.0,
-        timeout_seconds: float = 300.0,
         queue_maxsize: int = 100,
         tools: str = "",
     ) -> None:
-        self._webhook_url = webhook_url.rstrip("/")
-        self._bearer_token = bearer_token
+        self._llm_client = llm_client
         self._prompt_header = prompt_header
         self._prompt_per_msg = prompt_per_msg
         self._model = model
         self._cooldown_seconds = cooldown_seconds
-        self._timeout = httpx.Timeout(
-            connect=10.0, read=timeout_seconds, write=30.0, pool=10.0
-        )
         self._queue_maxsize = queue_maxsize
-        self._tools: dict = json.loads(tools) if tools else {}
+        self._request_options: dict[str, Any] = json.loads(tools) if tools else {}
+        if not isinstance(self._request_options, dict):
+            raise ValueError("WEBHOOK_TOOLS must contain a JSON object")
         self._subscribers: set[asyncio.Queue] = set()
-        self._http: Optional[httpx.AsyncClient] = None
         self._pending_records: list[MessageRecord] = []
         self._cooldown_task: Optional[asyncio.Task] = None
         self._delivery_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
-        self._http = httpx.AsyncClient(timeout=self._timeout)
+        if self._llm_client is not None:
+            await self._llm_client.start()
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=self._queue_maxsize)
@@ -98,7 +93,7 @@ class WebhookDispatcher:
                     pass
             q.put_nowait(payload)
 
-        if self._webhook_url:
+        if self._llm_client is not None:
             self._pending_records.append(record)
             if self._cooldown_task is not None and not self._cooldown_task.done():
                 self._cooldown_task.cancel()
@@ -137,42 +132,24 @@ class WebhookDispatcher:
             )
 
     async def _call_llm(self, records: list[MessageRecord]) -> None:
-        if self._http is None:
-            self._http = httpx.AsyncClient(timeout=self._timeout)
+        if self._llm_client is None:
+            return
         content = _render_prompt(self._prompt_header, self._prompt_per_msg, records)
-        url = f"{self._webhook_url}/chat/completions"
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self._bearer_token:
-            headers["Authorization"] = f"Bearer {self._bearer_token}"
-        body = {
-            "model": self._model,
-            "messages": [{"role": "user", "content": content}],
-            **self._tools,
-        }
-        resp = await self._http.post(url, json=body, headers=headers)
-        response_text = resp.text
-        if resp.is_success:
-            logger.info(
-                "LLM webhook response: messages=%d model=%s status=%d body=%s",
-                len(records),
-                self._model,
-                resp.status_code,
-                response_text,
-            )
-        else:
-            logger.warning(
-                "LLM webhook error response: messages=%d model=%s status=%d body=%s",
-                len(records),
-                self._model,
-                resp.status_code,
-                response_text,
-            )
-        resp.raise_for_status()
-        logger.debug(
-            "LLM webhook: completed call with %d message(s); model=%s status=%d",
+        result = await self._llm_client.run(
+            model=self._model,
+            prompt=content,
+            request_options=self._request_options,
+        )
+        logger.info(
+            "LLM webhook response: messages=%d model=%s body=%s",
             len(records),
             self._model,
-            resp.status_code,
+            json.dumps(result, ensure_ascii=False),
+        )
+        logger.debug(
+            "LLM webhook: completed call with %d message(s); model=%s",
+            len(records),
+            self._model,
         )
 
     async def close(self) -> None:
@@ -180,5 +157,5 @@ class WebhookDispatcher:
             self._cooldown_task.cancel()
         for task in self._delivery_tasks:
             task.cancel()
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
+        if self._llm_client is not None:
+            await self._llm_client.close()

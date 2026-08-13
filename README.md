@@ -50,14 +50,15 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `OPENAI_API_KEY` | yes | — | OpenAI API key for embeddings |
 | `EMBEDDING_MODEL` | no | `text-embedding-3-small` | OpenAI embedding model; `dimensions` is only supported by `text-embedding-3-*` models |
 | `EMBEDDING_VECTOR_SIZE` | no | `1536` | Output dimension requested from the model and used for the Qdrant collection; see note below |
-| `WEBHOOK_URL` | no | — | OpenAI-compatible base URL for the LLM callback (e.g. `https://api.openai.com/v1`) |
+| `WEBHOOK_URL` | no | — | OpenWebUI origin or API base for the LLM callback (e.g. `https://openwebui.example.com/api/v1`) |
+| `WEBHOOK_LLM_BACKEND` | no | `openwebui_chat` | Callback protocol implementation; the current backend runs OpenWebUI's chat-based native-agent loop |
 | `WEBHOOK_BEARER_TOKEN` | no | — | Bearer token sent in the `Authorization` header |
 | `WEBHOOK_PROMPT_HEADER` | no | `New Matrix messages:` | Text prepended once before all per-message lines |
 | `WEBHOOK_PROMPT_PER_MSG` | no | `{sender_name} ({sender}) in {room_name} ({room}): {message}` | Template rendered once per buffered message |
 | `WEBHOOK_MODEL` | no | `gpt-4o-mini` | Model name passed to the LLM |
 | `WEBHOOK_COOLDOWN_SECONDS` | no | `300` | Seconds of silence before the LLM is called; multiple messages within the window are batched |
-| `WEBHOOK_TIMEOUT_SECONDS` | no | `300` | Seconds to wait while reading an LLM response; connect, write, and pool timeouts remain short |
-| `WEBHOOK_TOOLS` | no | — | Optional JSON string of tools/parameters merged into the chat completions request body |
+| `WEBHOOK_TIMEOUT_SECONDS` | no | `300` | Seconds to wait while reading or polling an agentic run; connect, write, and pool timeouts remain short |
+| `WEBHOOK_TOOLS` | no | — | Optional JSON object added to the OpenWebUI completion request, normally containing `tool_ids` |
 | `BACKFILL_LIMIT` | no | `100` | Messages fetched per page per room during startup backfill |
 | `BACKFILL_PAGES_MAX` | no | `10` | Maximum backfill pages per room; `0` = full history |
 | `MESSAGE_BUFFER_SIZE` | no | `500` | In-memory ring buffer size for `get_recent_messages` |
@@ -187,18 +188,24 @@ Sends a plain-text message to a room.
 
 ### LLM callback
 
-When `WEBHOOK_URL` is set, an OpenAI-compatible chat-completions request is sent after a configurable cooldown period with no new messages (default 5 minutes). Multiple messages arriving within the cooldown window are batched into a single call, with a maximum of 50 messages per batch; reaching the cap sends that batch immediately.
+When `WEBHOOK_URL` is set, the rendered prompt is sent through OpenWebUI's native server-side agent loop after a configurable cooldown period with no new messages (default 5 minutes). Multiple messages arriving within the cooldown window are batched into a single call, with a maximum of 50 messages per batch; reaching the cap sends that batch immediately.
 
-```
-POST {WEBHOOK_URL}/chat/completions
-Authorization: Bearer {WEBHOOK_BEARER_TOKEN}
-Content-Type: application/json
+The `openwebui_chat` backend creates a persistent chat and assistant message
+that appear in OpenWebUI's chat interface. It submits `stream: true` to
+`/api/chat/completions` and reads the completed assistant message, including its
+structured `output` tool-call records. This is required because OpenWebUI's
+current multi-round native tool loop does not run for a stateless, non-streaming
+chat-completions request. The final assistant message is logged at `INFO` level.
 
-{
-  "model": "gpt-4o-mini",
-  "messages": [{ "role": "user", "content": "<rendered prompt>" }]
-}
-```
+`WEBHOOK_TOOLS` is passed as extra request fields. For MCP tools, use a value such
+as `{"tool_ids": ["server:mcp:matrix"]}`. The callback's normal tool-only flow is
+blocking; if a non-empty `session_id` is supplied, nio-mcp polls OpenWebUI's chat
+task endpoint before retrieving the result. Protocol fields (`model`, `messages`,
+`stream`, `chat_id`, `id`, and `background_tasks`) cannot be overridden.
+
+The dispatcher depends on a small callback-client interface. A future OpenWebUI
+Responses API implementation can be added behind `WEBHOOK_LLM_BACKEND` without
+changing Matrix event collection, batching, or prompt rendering.
 
 **`WEBHOOK_PROMPT_HEADER`** is prepended once. **`WEBHOOK_PROMPT_PER_MSG`** is rendered for every buffered message and the results are joined with newlines. Braces inside message bodies are never re-interpreted as placeholders.
 

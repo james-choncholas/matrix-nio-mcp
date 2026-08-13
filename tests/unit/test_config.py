@@ -36,6 +36,7 @@ def test_default_values(monkeypatch):
     assert s.qdrant_port == 6333
     assert s.qdrant_collection == "matrix_messages"
     assert s.webhook_url == ""
+    assert s.webhook_llm_backend == "openwebui_chat"
     assert s.webhook_bearer_token == ""
     assert s.webhook_prompt_header == "New Matrix messages:"
     assert s.webhook_prompt_per_msg == "{sender_name} ({sender}) in {room_name} ({room}): {message}"
@@ -56,6 +57,7 @@ def test_env_overrides_defaults(monkeypatch):
         "QDRANT_HOST": "qdrant.internal",
         "QDRANT_PORT": "6334",
         "WEBHOOK_URL": "http://llm.example.com/v1",
+        "WEBHOOK_LLM_BACKEND": "openwebui_chat",
         "WEBHOOK_BEARER_TOKEN": "secret-token",
         "WEBHOOK_PROMPT_HEADER": "Summarize these:",
         "WEBHOOK_PROMPT_PER_MSG": "{sender_name}: {message}",
@@ -69,6 +71,7 @@ def test_env_overrides_defaults(monkeypatch):
     assert s.qdrant_host == "qdrant.internal"
     assert s.qdrant_port == 6334
     assert s.webhook_url == "http://llm.example.com/v1"
+    assert s.webhook_llm_backend == "openwebui_chat"
     assert s.webhook_bearer_token == "secret-token"
     assert s.webhook_prompt_header == "Summarize these:"
     assert s.webhook_prompt_per_msg == "{sender_name}: {message}"

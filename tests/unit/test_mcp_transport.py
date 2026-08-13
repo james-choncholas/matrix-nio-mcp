@@ -51,6 +51,7 @@ def _service_patches():
     with (
         patch("nio_mcp.server.VectorStore", return_value=fake_vs),
         patch("nio_mcp.server.WebhookDispatcher", return_value=fake_wd),
+        patch("nio_mcp.server.create_llm_callback_client", return_value=None),
         patch("nio_mcp.server.MatrixMCPClient", return_value=fake_mc),
         patch("nio_mcp.server.EmbeddingClient", return_value=MagicMock()),
     ):
@@ -213,6 +214,7 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
     settings.qdrant_port = 6334
     settings.qdrant_collection = "matrix_messages"
     settings.webhook_url = "http://llm.example.com/v1"
+    settings.webhook_llm_backend = "openwebui_chat"
     settings.webhook_bearer_token = "secret-token"
     settings.webhook_prompt_header = "Summarize these:"
     settings.webhook_prompt_per_msg = "{sender_name}: {message}"
@@ -223,10 +225,16 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
     settings.webhook_tools = '{"tool_ids": ["test"]}'
 
     webhook_dispatcher_ctor = MagicMock(return_value=fake_wd)
+    llm_callback_client = MagicMock()
+    llm_callback_client_factory = MagicMock(return_value=llm_callback_client)
 
     with (
         patch("nio_mcp.server.VectorStore", return_value=fake_vs),
         patch("nio_mcp.server.WebhookDispatcher", webhook_dispatcher_ctor),
+        patch(
+            "nio_mcp.server.create_llm_callback_client",
+            llm_callback_client_factory,
+        ),
         patch("nio_mcp.server.MatrixMCPClient", return_value=fake_mc),
         patch("nio_mcp.server.EmbeddingClient", return_value=embedding_client),
         patch("nio_mcp.server.StreamableHTTPSessionManager", return_value=sm),
@@ -236,14 +244,18 @@ async def test_lifespan_passes_webhook_settings_to_dispatcher():
         await lifespan_cm.__aenter__()
         await lifespan_cm.__aexit__(None, None, None)
 
-    webhook_dispatcher_ctor.assert_called_once_with(
-        webhook_url="http://llm.example.com/v1",
+    llm_callback_client_factory.assert_called_once_with(
+        backend="openwebui_chat",
+        base_url="http://llm.example.com/v1",
         bearer_token="secret-token",
+        timeout_seconds=240.0,
+    )
+    webhook_dispatcher_ctor.assert_called_once_with(
+        llm_client=llm_callback_client,
         prompt_header="Summarize these:",
         prompt_per_msg="{sender_name}: {message}",
         model="gpt-4.1-mini",
         cooldown_seconds=12.5,
-        timeout_seconds=240.0,
         queue_maxsize=42,
         tools='{"tool_ids": ["test"]}',
     )
@@ -283,6 +295,7 @@ async def test_lifespan_does_not_block_on_matrix_startup():
     with (
         patch("nio_mcp.server.VectorStore", return_value=fake_vs),
         patch("nio_mcp.server.WebhookDispatcher", return_value=fake_wd),
+        patch("nio_mcp.server.create_llm_callback_client", return_value=None),
         patch("nio_mcp.server.MatrixMCPClient", return_value=fake_mc),
         patch("nio_mcp.server.EmbeddingClient", return_value=MagicMock()),
         patch("nio_mcp.server.StreamableHTTPSessionManager", return_value=sm),
