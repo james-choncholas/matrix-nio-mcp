@@ -50,6 +50,7 @@ class WebhookDispatcher:
         prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}",
         model: str = "gpt-4o-mini",
         cooldown_seconds: float = 300.0,
+        max_queue_seconds: float = 900.0,
         queue_maxsize: int = 100,
         tools: str = "",
     ) -> None:
@@ -58,6 +59,16 @@ class WebhookDispatcher:
         self._prompt_per_msg = prompt_per_msg
         self._model = model
         self._cooldown_seconds = cooldown_seconds
+        self._max_queue_seconds = max_queue_seconds
+        if max_queue_seconds < cooldown_seconds:
+            logger.warning(
+                "webhook max_queue_seconds (%.1f) is less than cooldown_seconds "
+                "(%.1f); the maximum queue age will cap the cooldown, so batches "
+                "fire after %.1fs of buffering instead of after a quiet period",
+                max_queue_seconds,
+                cooldown_seconds,
+                max_queue_seconds,
+            )
         self._queue_maxsize = queue_maxsize
         self._request_options: dict[str, Any] = json.loads(tools) if tools else {}
         if not isinstance(self._request_options, dict):
@@ -66,6 +77,9 @@ class WebhookDispatcher:
         self._pending_records: list[MessageRecord] = []
         self._cooldown_task: Optional[asyncio.Task] = None
         self._delivery_tasks: set[asyncio.Task] = set()
+        # Monotonic timestamp of the oldest un-delivered record in the current
+        # batch. Used to enforce an upper bound on how long any message waits.
+        self._batch_started_at: Optional[float] = None
 
     async def start(self) -> None:
         if self._llm_client is not None:
@@ -95,23 +109,35 @@ class WebhookDispatcher:
 
         if self._llm_client is not None:
             self._pending_records.append(record)
+            now = asyncio.get_running_loop().time()
+            if self._batch_started_at is None:
+                self._batch_started_at = now
             if self._cooldown_task is not None and not self._cooldown_task.done():
                 self._cooldown_task.cancel()
             if len(self._pending_records) >= _MAX_BATCH_SIZE:
                 records = self._pending_records[:_MAX_BATCH_SIZE]
                 del self._pending_records[:_MAX_BATCH_SIZE]
                 self._cooldown_task = None
+                self._batch_started_at = now if self._pending_records else None
                 self._schedule_delivery(records)
             else:
-                self._cooldown_task = asyncio.create_task(self._cooldown_fire())
+                # Debounce for the cooldown, but never let the oldest buffered
+                # message wait longer than max_queue_seconds. Capping the sleep
+                # at the remaining time until that deadline guarantees the batch
+                # flushes even if messages keep arriving within the cooldown.
+                deadline = self._batch_started_at + self._max_queue_seconds
+                wait = min(self._cooldown_seconds, deadline - now)
+                self._cooldown_task = asyncio.create_task(self._cooldown_fire(wait))
 
-    async def _cooldown_fire(self) -> None:
+    async def _cooldown_fire(self, wait: float) -> None:
         try:
-            await asyncio.sleep(self._cooldown_seconds)
+            if wait > 0:
+                await asyncio.sleep(wait)
         except asyncio.CancelledError:
             return
         records, self._pending_records = self._pending_records, []
         self._cooldown_task = None
+        self._batch_started_at = None
         if not records:
             return
         await self._deliver(records)

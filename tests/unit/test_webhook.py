@@ -236,6 +236,67 @@ async def test_cooldown_resets_on_new_message():
     assert client.calls
 
 
+async def test_max_queue_seconds_bounds_wait_under_continuous_traffic():
+    # Regression: a pure debounce never fires when messages keep arriving within
+    # the cooldown window. The max-queue deadline must force a flush regardless.
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(
+        llm_client=client,
+        prompt_header="",
+        prompt_per_msg="{message}",
+        cooldown_seconds=0.1,   # each message alone would push the timer out 0.1s
+        max_queue_seconds=0.2,  # ...but nothing may wait longer than 0.2s
+    )
+    await dispatcher.start()
+    # Seven messages spaced 0.04s apart (< cooldown) => ~0.28s of steady traffic.
+    for _ in range(7):
+        await dispatcher.dispatch(RECORD)
+        await asyncio.sleep(0.04)
+    assert client.calls, "batch must flush at the max-queue deadline despite resets"
+    await dispatcher.close()
+
+
+async def test_max_queue_seconds_does_not_flush_before_deadline():
+    # Within a single cooldown window and below the max-queue deadline, the batch
+    # should still be buffered (normal debounce behaviour is preserved).
+    client = FakeLLMClient()
+    dispatcher = WebhookDispatcher(
+        llm_client=client,
+        cooldown_seconds=0.05,
+        max_queue_seconds=10.0,
+    )
+    await dispatcher.start()
+    await dispatcher.dispatch(RECORD)
+    await asyncio.sleep(0.02)
+    assert not client.calls
+    await asyncio.sleep(0.05)
+    assert client.calls
+    await dispatcher.close()
+
+
+def test_warns_when_max_queue_seconds_below_cooldown(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="nio_mcp.webhook"):
+        WebhookDispatcher(cooldown_seconds=300.0, max_queue_seconds=60.0)
+    assert any(
+        "max_queue_seconds" in record.getMessage()
+        and "less than" in record.getMessage().lower()
+        for record in caplog.records
+    )
+
+
+def test_no_warning_when_max_queue_seconds_at_least_cooldown(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="nio_mcp.webhook"):
+        WebhookDispatcher(cooldown_seconds=60.0, max_queue_seconds=60.0)
+        WebhookDispatcher(cooldown_seconds=60.0, max_queue_seconds=120.0)
+    assert not any(
+        "max_queue_seconds" in record.getMessage() for record in caplog.records
+    )
+
+
 async def test_batch_cap_fires_at_50_without_waiting_for_cooldown():
     client = FakeLLMClient()
     dispatcher = WebhookDispatcher(

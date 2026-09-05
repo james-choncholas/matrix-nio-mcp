@@ -42,6 +42,7 @@ def test_default_values(monkeypatch):
     assert s.webhook_prompt_per_msg == "{sender_name} ({sender}) in {room_name} ({room}): {message}"
     assert s.webhook_model == "gpt-4o-mini"
     assert s.webhook_cooldown_seconds == 300.0
+    assert s.webhook_max_queue_seconds == 900.0
     assert s.webhook_timeout_seconds == 300.0
     assert s.webhook_tools == ""
     assert s.backfill_limit == 100
@@ -63,6 +64,7 @@ def test_env_overrides_defaults(monkeypatch):
         "WEBHOOK_PROMPT_PER_MSG": "{sender_name}: {message}",
         "WEBHOOK_MODEL": "gpt-4.1-mini",
         "WEBHOOK_COOLDOWN_SECONDS": "12.5",
+        "WEBHOOK_MAX_QUEUE_SECONDS": "60",
         "WEBHOOK_TIMEOUT_SECONDS": "240",
         "WEBHOOK_TOOLS": '{"tool_ids": ["test"]}',
         "BACKFILL_LIMIT": "50",
@@ -77,6 +79,7 @@ def test_env_overrides_defaults(monkeypatch):
     assert s.webhook_prompt_per_msg == "{sender_name}: {message}"
     assert s.webhook_model == "gpt-4.1-mini"
     assert s.webhook_cooldown_seconds == 12.5
+    assert s.webhook_max_queue_seconds == 60.0
     assert s.webhook_timeout_seconds == 240.0
     assert s.webhook_tools == '{"tool_ids": ["test"]}'
     assert s.backfill_limit == 50
@@ -142,6 +145,15 @@ def test_invalid_webhook_cooldown_seconds_raise_validation_error(monkeypatch, va
     for key, val in REQUIRED_ENV.items():
         monkeypatch.setenv(key, val)
     monkeypatch.setenv("WEBHOOK_COOLDOWN_SECONDS", value)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-0.5"])
+def test_invalid_webhook_max_queue_seconds_raise_validation_error(monkeypatch, value):
+    for key, val in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.setenv("WEBHOOK_MAX_QUEUE_SECONDS", value)
     with pytest.raises(ValidationError):
         Settings()
 

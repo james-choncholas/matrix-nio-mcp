@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     webhook_prompt_per_msg: str = "{sender_name} ({sender}) in {room_name} ({room}): {message}"
     webhook_model: str = "gpt-4o-mini"
     webhook_cooldown_seconds: float = 300.0  # fire LLM only after this many quiet seconds
+    # Upper bound on how long any message may sit in the queue. Even if messages
+    # keep arriving within the cooldown window, the batch flushes once its oldest
+    # message reaches this age. Should be >= webhook_cooldown_seconds.
+    webhook_max_queue_seconds: float = 900.0
     webhook_timeout_seconds: float = 300.0  # read timeout for agentic LLM requests
     webhook_tools: str = ""  # Extra request JSON, e.g. '{"tool_ids": ["server:mcp:myserver"]}'
 
@@ -69,7 +73,9 @@ class Settings(BaseSettings):
             raise ValueError("must be a positive integer")
         return v
 
-    @field_validator("webhook_cooldown_seconds", "webhook_timeout_seconds")
+    @field_validator(
+        "webhook_cooldown_seconds", "webhook_max_queue_seconds", "webhook_timeout_seconds"
+    )
     @classmethod
     def cooldown_must_be_positive(cls, v: float) -> float:
         if v <= 0:

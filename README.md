@@ -57,6 +57,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `WEBHOOK_PROMPT_PER_MSG` | no | `{sender_name} ({sender}) in {room_name} ({room}): {message}` | Template rendered once per buffered message |
 | `WEBHOOK_MODEL` | no | `gpt-4o-mini` | Model name passed to the LLM |
 | `WEBHOOK_COOLDOWN_SECONDS` | no | `300` | Seconds of silence before the LLM is called; multiple messages within the window are batched |
+| `WEBHOOK_MAX_QUEUE_SECONDS` | no | `900` | Upper bound on how long a message may sit in the queue; forces the batch out even if messages keep resetting the cooldown. Should be ≥ `WEBHOOK_COOLDOWN_SECONDS` |
 | `WEBHOOK_TIMEOUT_SECONDS` | no | `300` | Seconds to wait while reading or polling an agentic run; connect, write, and pool timeouts remain short |
 | `WEBHOOK_TOOLS` | no | — | Optional JSON object added to the OpenWebUI completion request, normally containing `tool_ids` |
 | `BACKFILL_LIMIT` | no | `100` | Messages fetched per page per room during startup backfill |
@@ -188,7 +189,7 @@ Sends a plain-text message to a room.
 
 ### LLM callback
 
-When `WEBHOOK_URL` is set, the rendered prompt is sent through OpenWebUI's native server-side agent loop after a configurable cooldown period with no new messages (default 5 minutes). Multiple messages arriving within the cooldown window are batched into a single call, with a maximum of 50 messages per batch; reaching the cap sends that batch immediately.
+When `WEBHOOK_URL` is set, the rendered prompt is sent through OpenWebUI's native server-side agent loop after a configurable cooldown period with no new messages (default 5 minutes). Multiple messages arriving within the cooldown window are batched into a single call, with a maximum of 50 messages per batch; reaching the cap sends that batch immediately. Because the cooldown is a debounce, a steady stream of messages spaced closer than the cooldown would otherwise keep resetting the timer forever and the oldest message would never be sent. `WEBHOOK_MAX_QUEUE_SECONDS` (default 15 minutes) caps how long any message may wait: once the oldest buffered message reaches that age, the batch is flushed regardless of ongoing traffic. If it is configured below `WEBHOOK_COOLDOWN_SECONDS` a warning is logged, since the max age then effectively overrides the cooldown.
 
 The `openwebui_chat` backend creates a persistent chat and assistant message
 that appear in OpenWebUI's chat interface. It submits `stream: true` to
