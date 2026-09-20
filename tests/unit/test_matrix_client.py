@@ -105,6 +105,7 @@ def vector_store():
     vs.search = AsyncMock()
     vs.scroll = AsyncMock()
     vs.init_collection = AsyncMock()
+    vs.update_sender_name = AsyncMock()
     vs.close = AsyncMock()
     return vs
 
@@ -968,3 +969,63 @@ async def test_index_initial_sync_skips_ignored_rooms(client, mock_nio_client):
     indexed_bodies = client._embedding_client.embed_batch.call_args.args[0]
     assert "should index" in indexed_bodies
     assert "should not index" not in indexed_bodies
+
+
+# --- _on_room_member self-heal ---
+
+def _make_member_event(mxid, membership, display_name=None):
+    event = MagicMock(spec=nio.RoomMemberEvent)
+    event.state_key = mxid
+    event.membership = membership
+    event.display_name = display_name
+    return event
+
+
+async def test_on_room_member_heals_earlier_fallback_messages(client, vector_store):
+    room = _make_room(room_id="!trip:example.org", display_name="Trip")
+    ghost = "@signal_abcd-1234:example.org"
+    localpart = "signal_abcd-1234"
+
+    # An earlier message indexed with the localpart fallback (name unknown then).
+    client._store.insert_message(
+        MessageRecord(
+            event_id="$m:example.org",
+            room_id="!trip:example.org",
+            room_name="Trip",
+            sender=ghost,
+            sender_name=localpart,
+            body="booked the hotel",
+            timestamp=1785351709449,
+        )
+    )
+
+    # The bridge now delivers the real display name via a member event.
+    await client._on_room_member(room, _make_member_event(ghost, "join", "Alice"))
+
+    assert client._store.get_recent_messages(10)[0].sender_name == "Alice"
+    vector_store.update_sender_name.assert_awaited_once_with(
+        "!trip:example.org", ghost, "Alice"
+    )
+
+
+async def test_on_room_member_without_display_name_does_not_downgrade(client, vector_store):
+    room = _make_room(room_id="!trip:example.org", display_name="Trip")
+    ghost = "@signal_abcd-1234:example.org"
+
+    client._store.insert_message(
+        MessageRecord(
+            event_id="$m:example.org",
+            room_id="!trip:example.org",
+            room_name="Trip",
+            sender=ghost,
+            sender_name="Alice",
+            body="booked the hotel",
+            timestamp=1785351709449,
+        )
+    )
+
+    # Join event carrying no display name must not overwrite the stored real name.
+    await client._on_room_member(room, _make_member_event(ghost, "join", None))
+
+    assert client._store.get_recent_messages(10)[0].sender_name == "Alice"
+    vector_store.update_sender_name.assert_not_awaited()

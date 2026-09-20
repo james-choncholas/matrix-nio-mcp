@@ -346,6 +346,13 @@ The text passed to the embedding model is `body` only. `sender_search` stores di
 
 `init_collection()` is idempotent — checks existing collections before creating. Called once at startup before `matrix_client.start()`.
 
+### Sender-name reconciliation
+
+`sender_name` is captured at index time from the current member roster, falling back to the MXID localpart when the display name isn't known yet (common for bridge ghost users whose profile propagates asynchronously). Two mechanisms keep that value fresh — both live in `migrations.py` and rewrite only the `sender_name`/`sender_search` payload fields (no re-embedding, since the vector derives from `body`):
+
+- **Startup reconciliation** — `reconcile_sender_names(store, vector_store)` runs on every `matrix_client.start()` (both the restart and fresh/retry branches, after `_retry_pending_index()`). It joins the `messages` table against the `members` roster and rewrites any message whose stored `sender_name` lags the known member name, in SQLite (`update_sender_name`) and Qdrant (`VectorStore.update_sender_name`, a filter-scoped `set_payload`). It is idempotent — a clean pass issues no writes — and skips fallback (localpart) member names so a real, already-stored name is never downgraded. Also exposed as a standalone one-off: `python scripts/reconcile_sender_names.py`.
+- **Live self-heal** — `_on_room_member` calls `apply_sender_name` whenever a member event carries a real display name, backfilling any earlier messages from that sender that were indexed with the fallback. It gates the Qdrant write on the SQLite rowcount (the two stores stay in lockstep), and only fires when the event actually carries a name, so a nameless membership event never overwrites a stored real name.
+
 ### `VectorStore` search vs scroll
 
 `search(vector, ...)` — cosine similarity search via Qdrant's `/search` endpoint. Accepts optional `after_ts` / `before_ts` (Unix ms) which become a `Range` filter on the `timestamp` payload field, combined with any `room_id` / `sender` exact filters and `sender_query` flexible full-text sender matching via `_build_filter()`.

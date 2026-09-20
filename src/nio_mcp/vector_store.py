@@ -203,6 +203,24 @@ class VectorStore:
             wait=False,
         )
 
+    async def update_sender_name(
+        self, room_id: str, sender: str, sender_name: str
+    ) -> None:
+        """Rewrite sender_name / sender_search on every indexed point from this
+        sender in this room, without re-embedding (the vector derives from body only).
+        """
+        await self._client.set_payload(
+            collection_name=self._collection,
+            payload={
+                "sender_name": sender_name,
+                "sender_search": _sender_search_text(sender, sender_name),
+            },
+            points=qmodels.Filter(
+                must=[_room_condition(room_id), _exact_sender_condition(sender)]
+            ),
+            wait=False,
+        )
+
     def _build_filter(
         self,
         room_id: Optional[str] = None,
