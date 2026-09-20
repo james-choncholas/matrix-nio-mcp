@@ -204,6 +204,17 @@ class MessageStore:
         self._conn.commit()
         return cur.rowcount
 
+    def count_sender_name_updates(
+        self, room_id: str, sender: str, sender_name: str
+    ) -> int:
+        """Count messages that would be changed by ``update_sender_name``."""
+        row = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM messages
+               WHERE room_id = ? AND sender = ? AND sender_name != ?""",
+            (room_id, sender, sender_name),
+        ).fetchone()
+        return row["count"]
+
     def get_sender_name_fixes(self) -> list[tuple[str, str, str]]:
         """Return (room_id, sender, display_name) triples where a message's stored
         sender_name disagrees with the current known member display name.

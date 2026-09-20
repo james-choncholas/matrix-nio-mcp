@@ -218,7 +218,7 @@ class VectorStore:
             points=qmodels.Filter(
                 must=[_room_condition(room_id), _exact_sender_condition(sender)]
             ),
-            wait=False,
+            wait=True,
         )
 
     def _build_filter(

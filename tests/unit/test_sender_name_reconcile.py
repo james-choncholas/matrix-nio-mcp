@@ -93,6 +93,7 @@ async def test_vector_update_sender_name_sets_payload_by_filter(vector_store):
     assert kwargs["payload"]["sender_name"] == "Alice"
     assert kwargs["payload"]["sender_search"] == _sender_search_text(GHOST, "Alice")
     assert kwargs["collection_name"] == "test_col"
+    assert kwargs["wait"] is True
     # Scoped to this sender in this room via a filter selector.
     assert kwargs["points"] is not None
 
@@ -117,6 +118,23 @@ async def test_apply_sender_name_writes_both_stores(store):
 
     assert updated == 1
     vs.update_sender_name.assert_awaited_once_with(ROOM, GHOST, "Alice")
+
+
+async def test_apply_sender_name_keeps_sqlite_retryable_when_qdrant_fails(store):
+    store.insert_message(_record("$a:example.org", GHOST, LOCALPART))
+    store.upsert_member(ROOM, GHOST, "Alice")
+    vs = AsyncMock(spec=VectorStore)
+    vs.update_sender_name.side_effect = RuntimeError("Qdrant unavailable")
+
+    with pytest.raises(RuntimeError, match="Qdrant unavailable"):
+        await apply_sender_name(store, vs, ROOM, GHOST, "Alice")
+
+    assert store.get_recent_messages(10)[0].sender_name == LOCALPART
+    assert store.get_sender_name_fixes() == [(ROOM, GHOST, "Alice")]
+
+    vs.update_sender_name.side_effect = None
+    assert await reconcile_sender_names(store, vs) == 1
+    assert store.get_recent_messages(10)[0].sender_name == "Alice"
 
 
 async def test_reconcile_fixes_fallback_and_is_idempotent(store):

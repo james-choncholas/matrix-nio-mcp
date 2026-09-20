@@ -35,14 +35,15 @@ async def apply_sender_name(
 ) -> int:
     """Propagate a known display name to a sender's already-stored messages.
 
-    Updates SQLite first; the Qdrant payload rewrite runs only when SQLite actually
-    changed rows (the two stores stay in lockstep, so an unchanged SQLite side means
-    there is nothing indexed to fix). Returns the number of messages updated.
+    Updates Qdrant before committing the corresponding SQLite change. If Qdrant is
+    unavailable, SQLite remains stale so a later reconciliation can retry safely.
+    Returns the number of SQLite messages updated.
     """
-    updated = store.update_sender_name(room_id, sender, display_name)
-    if updated:
-        await vector_store.update_sender_name(room_id, sender, display_name)
-    return updated
+    if not store.count_sender_name_updates(room_id, sender, display_name):
+        return 0
+
+    await vector_store.update_sender_name(room_id, sender, display_name)
+    return store.update_sender_name(room_id, sender, display_name)
 
 
 async def reconcile_sender_names(
