@@ -190,6 +190,47 @@ class MessageStore:
         self._conn.commit()
         return new_records
 
+    def update_sender_name(self, room_id: str, sender: str, sender_name: str) -> int:
+        """Rewrite the stored display name for a sender's messages in a room.
+
+        Only rows whose current sender_name differs are touched, so the returned
+        rowcount reflects the number of messages actually changed (0 = no-op).
+        """
+        cur = self._conn.execute(
+            """UPDATE messages SET sender_name = ?
+               WHERE room_id = ? AND sender = ? AND sender_name != ?""",
+            (sender_name, room_id, sender, sender_name),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def count_sender_name_updates(
+        self, room_id: str, sender: str, sender_name: str
+    ) -> int:
+        """Count messages that would be changed by ``update_sender_name``."""
+        row = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM messages
+               WHERE room_id = ? AND sender = ? AND sender_name != ?""",
+            (room_id, sender, sender_name),
+        ).fetchone()
+        return row["count"]
+
+    def get_sender_name_fixes(self) -> list[tuple[str, str, str]]:
+        """Return (room_id, sender, display_name) triples where a message's stored
+        sender_name disagrees with the current known member display name.
+
+        Drives the startup reconciliation: any message indexed before its author's
+        display name was known (falling back to the MXID localpart) is surfaced here
+        once the member roster carries the real name.
+        """
+        rows = self._conn.execute(
+            """SELECT DISTINCT m.room_id, m.sender, mem.display_name
+               FROM messages m
+               JOIN members mem ON mem.room_id = m.room_id AND mem.mxid = m.sender
+               WHERE m.sender_name != mem.display_name"""
+        ).fetchall()
+        return [(r["room_id"], r["sender"], r["display_name"]) for r in rows]
+
     def mark_indexed(self, event_id: str) -> None:
         self._conn.execute(
             "UPDATE messages SET indexed = 1 WHERE event_id = ?", (event_id,)

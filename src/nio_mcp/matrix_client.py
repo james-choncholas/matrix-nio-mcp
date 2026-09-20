@@ -21,6 +21,7 @@ import nio
 
 from nio_mcp.config import Settings
 from nio_mcp.embeddings import EmbeddingClient
+from nio_mcp.migrations import apply_sender_name, reconcile_sender_names
 from nio_mcp.models import MessageRecord
 from nio_mcp.store import MessageStore
 from nio_mcp.vector_store import VectorStore
@@ -87,6 +88,7 @@ class MatrixMCPClient:
             # live sync from the stored token without re-running backfill.
             self._restore_rooms_to_client()
             await self._retry_pending_index()
+            await self._reconcile_sender_names()
             logger.info("Resuming from stored sync token %s", stored_token)
             self._client.add_event_callback(self._on_message, RoomMessageText)
             self._client.add_event_callback(self._on_room_name, RoomNameEvent)
@@ -132,6 +134,7 @@ class MatrixMCPClient:
 
             self._mark_backfill_complete()
             await self._retry_pending_index()
+            await self._reconcile_sender_names()
 
             self._client.add_event_callback(self._on_message, RoomMessageText)
             self._client.add_event_callback(self._on_room_name, RoomNameEvent)
@@ -374,14 +377,36 @@ class MatrixMCPClient:
         mxid = event.state_key  # user whose membership changed
         membership = event.membership
         if membership == "join":
-            display_name = (
-                getattr(event, "display_name", None) or self._sender_display_name(mxid)
-            )
+            raw_name = getattr(event, "display_name", None)
+            display_name = raw_name or self._sender_display_name(mxid)
             # Ensure the room row exists (it may not if we just joined a new room)
             self._store.upsert_room(room.room_id, room.display_name or room.room_id, room.encrypted)
             self._store.upsert_member(room.room_id, mxid, display_name)
+            # Self-heal: a real name arriving now backfills any earlier messages that
+            # were indexed with the localpart fallback. Guard on raw_name so a missing
+            # name never downgrades an already-stored real display name.
+            if raw_name:
+                await self._heal_sender_name(room.room_id, mxid, raw_name)
         elif membership in ("leave", "ban"):
             self._store.remove_member(room.room_id, mxid)
+
+    async def _heal_sender_name(
+        self, room_id: str, sender: str, display_name: str
+    ) -> None:
+        try:
+            await apply_sender_name(
+                self._store, self._vector_store, room_id, sender, display_name
+            )
+        except Exception:
+            logger.exception(
+                "Failed to heal sender_name for %s in %s", sender, room_id
+            )
+
+    async def _reconcile_sender_names(self) -> None:
+        try:
+            await reconcile_sender_names(self._store, self._vector_store)
+        except Exception:
+            logger.exception("Sender-name reconciliation failed; continuing startup")
 
     # -------------------------------------------------------------------------
     # Internal — indexing
